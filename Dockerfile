@@ -1,6 +1,6 @@
 # https://medium.com/code-beyond/dockerizing-golang-apps-a-step-by-step-guide-to-reducing-docker-image-size-306898e7359e
 # Use the official Golang image to build the application
-FROM golang:1.23.6-alpine AS builder
+FROM golang:1.24.0-alpine AS builder
 
 # Set the Current Working Directory inside the container
 WORKDIR /app
