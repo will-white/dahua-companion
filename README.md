@@ -1,6 +1,6 @@
 # Dahua Companion
 
-The Dahua Companion allows you to integrate your [Dahua](https://www.dahuasecurity.com/) and [Amcrest](https://amcrest.com/wifi-video-doorbell-cameras.html) doorbell's button/ring/buzzer with any home automation that can listen queue / events.
+The Dahua Companion allows you to integrate your [Dahua](https://www.dahuasecurity.com/) and [Amcrest](https://amcrest.com/wifi-video-doorbell-cameras.html) doorbell's button/ring/buzzer with any home automation that can listen to queue / events.
 
 The Dahua Companion will listen for the button/ring/buzzer and then send a message/event/topic via MQTT e.g. `doorbell/pressed` with no payload.
 
@@ -15,3 +15,20 @@ For this project we're only concerned with the `AlarmLocal` event (This is the b
 After we receive an event we publish a `doorbell/pressed` to the MQTT broker.
 
 This project also has wrappers around the HTTP subscription and MQTT broker to always make sure it's connected. The only thing we don't have is an internal queue to monitor in between MQTT outages. Since it doesn't make sense to send events that no longer matter.
+
+## Home Assistant Example
+
+```
+alias: Doorbell buzzer
+triggers:
+  - trigger: mqtt
+    topic: doorbell/pressed
+actions:
+  - action: notify.echos
+    metadata: {}
+    data:
+      message: Someone is at the front door
+      data:
+        type: tts
+mode: single
+```
