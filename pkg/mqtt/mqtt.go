@@ -36,7 +36,11 @@ func (c *Client) Publish(message string) {
 	case c.queue <- message:
 		log.Info().Msg("Message queued")
 	default:
-		log.Warn().Msg("Queue is full, dropping message")
+		log.Warn().Msg("Queue is full. Dropping oldest message and adding new one.")
+		// Remove the oldest message.
+		<-c.queue
+		// Add the new message.
+		c.queue <- message
 	}
 }
 
