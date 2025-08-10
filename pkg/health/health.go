@@ -36,6 +36,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
+func (s *Server) dahuaHealthCheck() string {
+	doorbellStatus := "okay"
+	url := fmt.Sprintf("http://%s/cgi-bin/configManager.cgi?action=setConfig&VSP_PaaS.Online=true", s.dahuaClient.Cfg.Host)
+	res, err := s.dahuaClient.HttpClient.Get(url)
+	if err != nil {
+		log.Error().Err(err).Msg("client: error making http request")
+		doorbellStatus = "HTTP Request Error"
+	} else if res.StatusCode != http.StatusOK {
+		log.Error().Int("status_code", res.StatusCode).Msgf("Expected 200 response got: %d", res.StatusCode)
+		doorbellStatus = "HTTP Status Error " + res.Status
+	}
+	return doorbellStatus
+}
+
 func (s *Server) healthCheckHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		statusCode := http.StatusOK
@@ -51,7 +65,7 @@ func (s *Server) healthCheckHandler() http.HandlerFunc {
 			statusCode = http.StatusServiceUnavailable
 		}
 
-		doorbellStatus := s.dahuaClient.HealthCheck()
+		doorbellStatus := s.dahuaHealthCheck()
 		if doorbellStatus != "okay" {
 			statusCode = http.StatusServiceUnavailable
 		}
