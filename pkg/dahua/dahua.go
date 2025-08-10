@@ -16,8 +16,8 @@ import (
 var IsConnected int32
 
 type Client struct {
-	httpClient *http.Client
-	cfg        *config.Dahua
+	HttpClient *http.Client
+	Cfg        *config.Dahua
 }
 
 func New(cfg *config.Dahua) *Client {
@@ -27,7 +27,7 @@ func New(cfg *config.Dahua) *Client {
 			Password: cfg.Password,
 		},
 	}
-	return &Client{httpClient: httpClient, cfg: cfg}
+	return &Client{HttpClient: httpClient, Cfg: cfg}
 }
 
 func (c *Client) Listen(shutdown chan struct{}, messageChan chan<- string) {
@@ -50,8 +50,8 @@ func (c *Client) Listen(shutdown chan struct{}, messageChan chan<- string) {
 }
 
 func (c *Client) listen(messageChan chan<- string, shutdown chan struct{}) error {
-	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[AlarmLocal]&heartbeat=30", c.cfg.Host)
-	resp, err := c.httpClient.Get(url)
+	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[AlarmLocal]&heartbeat=30", c.Cfg.Host)
+	resp, err := c.HttpClient.Get(url)
 	if err != nil {
 		log.Error().Err(err).Msg("Error fetching http stream")
 		atomic.StoreInt32(&IsConnected, 0)
@@ -106,18 +106,4 @@ func isDoorbellPressed(line string) bool {
 	}
 
 	return eventData["Code"] == "AlarmLocal" && eventData["action"] == "Start"
-}
-
-func (c *Client) HealthCheck() string {
-	doorbellStatus := "okay"
-	url := fmt.Sprintf("http://%s/cgi-bin/configManager.cgi?action=setConfig&VSP_PaaS.Online=true", c.cfg.Host)
-	res, err := c.httpClient.Get(url)
-	if err != nil {
-		log.Error().Err(err).Msg("client: error making http request")
-		doorbellStatus = "HTTP Request Error"
-	} else if res.StatusCode != http.StatusOK {
-		log.Error().Int("status_code", res.StatusCode).Msgf("Expected 200 response got: %d", res.StatusCode)
-		doorbellStatus = "HTTP Status Error " + res.Status
-	}
-	return doorbellStatus
 }
