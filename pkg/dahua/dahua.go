@@ -105,5 +105,6 @@ func isDoorbellPressed(line string) bool {
 		}
 	}
 
-	return eventData["Code"] == "AlarmLocal" && eventData["action"] == "Start"
+	action, ok := eventData["action"]
+	return eventData["Code"] == "AlarmLocal" && (!ok || action == "Start")
 }
