@@ -5,3 +5,4 @@
 !/main.go
 !/go.mod
 !/go.sum
+!/pkg/
