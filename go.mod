@@ -6,6 +6,7 @@ toolchain go1.25.4
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/icholy/digest v1.1.0
 	github.com/joho/godotenv v1.5.1
