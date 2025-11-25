@@ -2,13 +2,14 @@ package dahua
 
 import (
 	"bufio"
+	"context"
 	"dahua_companion/pkg/config"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/icholy/digest"
 	"github.com/rs/zerolog/log"
 )
@@ -32,16 +33,15 @@ func New(cfg *config.Dahua) *Client {
 
 func (c *Client) Listen(shutdown chan struct{}, messageChan chan<- string) {
 	bo := backoff.NewExponentialBackOff()
-	bo.MaxElapsedTime = 0 // Retry forever
 
 	for {
 		select {
 		case <-shutdown:
 			return
 		default:
-			err := backoff.Retry(func() error {
-				return c.listen(messageChan, shutdown)
-			}, bo)
+			_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
+				return struct{}{}, c.listen(messageChan, shutdown)
+			}, backoff.WithBackOff(bo), backoff.WithMaxElapsedTime(0))
 			if err != nil {
 				log.Error().Err(err).Msg("Dahua listen retry loop failed")
 			}
