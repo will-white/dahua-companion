@@ -1,0 +1,34 @@
+name: Release Agent
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Every Monday at 9am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  propose-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Release Agent
+        run: |
+          chmod +x scripts/release-agent.sh
+          ./scripts/release-agent.sh
+
+      - name: Create Issue
+        if: hashFiles('release_proposal.md') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PROPOSED_TAG=$(grep 'Proposed Tag' release_proposal.md | cut -d' ' -f3)
+          gh issue create \
+            --title "Release Proposal: $PROPOSED_TAG" \
+            --body-file release_proposal.md \
+            --label "release-agent"
