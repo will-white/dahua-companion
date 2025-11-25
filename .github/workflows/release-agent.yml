@@ -17,20 +17,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check for existing open release proposals
+        id: check_issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING_ISSUE=$(gh issue list --label "release-agent" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          echo "issue_number=$EXISTING_ISSUE" >> $GITHUB_OUTPUT
+
       - name: Run Release Agent
         run: |
           chmod +x scripts/release-agent.sh
           ./scripts/release-agent.sh
 
-      - name: Create Issue
+      - name: Create or Update Issue
         if: hashFiles('release_proposal.md') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.check_issues.outputs.issue_number }}
         run: |
-          gh label create "release-agent" --color "0E8A16" --description "Issues created by the Release Agent" || true
-          gh label create "release-approved" --color "0075ca" --description "Approve release proposal" || true
           PROPOSED_TAG=$(grep 'Proposed Tag' release_proposal.md | cut -d' ' -f3)
-          gh issue create \
-            --title "Release Proposal: $PROPOSED_TAG" \
-            --body-file release_proposal.md \
-            --label "release-agent"
+          
+          if [ -n "$ISSUE_NUMBER" ]; then
+            echo "Updating existing issue #$ISSUE_NUMBER"
+            gh issue edit "$ISSUE_NUMBER" \
+              --title "Release Proposal: $PROPOSED_TAG" \
+              --body-file release_proposal.md
+            gh issue comment "$ISSUE_NUMBER" --body "🔄 Release proposal updated to $PROPOSED_TAG based on latest changes."
+          else
+            echo "Creating new issue"
+            gh label create "release-agent" --color "0E8A16" --description "Issues created by the Release Agent" || true
+            gh label create "release-approved" --color "0075ca" --description "Approve release proposal" || true
+            gh issue create \
+              --title "Release Proposal: $PROPOSED_TAG" \
+              --body-file release_proposal.md \
+              --label "release-agent"
+          fi
