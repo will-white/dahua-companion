@@ -83,6 +83,10 @@ $COMMITS
 \`\`\`
 
 This proposal was generated automatically by the Release Agent.
+
+## Approval
+
+To approve this release and trigger the deployment, add the **release-approved** label to this issue.
 EOF
 
 echo "Report generated at $OUTPUT_FILE"

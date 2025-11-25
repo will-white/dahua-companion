@@ -1,0 +1,43 @@
+name: Publish Release
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  publish:
+    if: github.event.label.name == 'release-approved' && contains(github.event.issue.labels.*.name, 'release-agent')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract Version
+        id: get_version
+        run: |
+          TITLE="${{ github.event.issue.title }}"
+          VERSION=$(echo "$TITLE" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+')
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from title '$TITLE'"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --target main \
+            --title "$VERSION" \
+            --notes "${{ github.event.issue.body }}"
+
+      - name: Close Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue close ${{ github.event.issue.number }} --comment "🚀 Release $VERSION has been published!"

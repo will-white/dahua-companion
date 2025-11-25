@@ -28,6 +28,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh label create "release-agent" --color "0E8A16" --description "Issues created by the Release Agent" || true
+          gh label create "release-approved" --color "0075ca" --description "Approve release proposal" || true
           PROPOSED_TAG=$(grep 'Proposed Tag' release_proposal.md | cut -d' ' -f3)
           gh issue create \
             --title "Release Proposal: $PROPOSED_TAG" \
