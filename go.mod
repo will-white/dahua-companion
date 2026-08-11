@@ -7,7 +7,7 @@ toolchain go1.26.5
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/eclipse/paho.mqtt.golang v1.5.1
-	github.com/icholy/digest v1.1.0
+	github.com/icholy/digest v1.2.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/rs/zerolog v1.34.0
