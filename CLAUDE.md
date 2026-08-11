@@ -12,13 +12,20 @@ go test ./...                        # all tests
 go test -race -v ./...               # what CI runs
 go test ./pkg/dahua -run TestIsDoorbellPressed   # single test
 go vet ./...                         # static analysis
+go mod tidy -diff                    # CI fails if go.mod/go.sum are untidy
 gofmt -l .                           # CI fails if this prints anything
 go run .                             # run locally (needs env vars, see below)
 go run . -healthcheck                # probe the local /health endpoint, exit 0/1
 docker build -t dahua-companion .
 ```
 
-CI (`.github/workflows/ci.yml`) runs: `scripts/check-go-version.sh`, `go mod verify`, build, vet, a `gofmt -l` check, then `go test -race`. `security.yml` runs `govulncheck ./...` on push/PR and weekly. `docker-publish.yml` also runs on PRs as a **build-only** validation — every step guards on `github.event_name != 'pull_request'`, so nothing is pushed or signed; it exists to catch a broken `Dockerfile` or action bump before a release.
+CI (`.github/workflows/ci.yml`) runs: `scripts/check-go-version.sh`, `go mod verify`, `go mod tidy -diff`, build, vet, golangci-lint (v2, config in `.golangci.yml` — std-error-handling exclusion preset), a `gofmt -l` check, then `go test -race`. `security.yml` runs `govulncheck ./...` on push/PR and weekly, plus `dependency-review` on PRs; `codeql.yml` runs CodeQL on push/PR and weekly (do not also enable CodeQL "default setup" in repo settings — they conflict). `docker-publish.yml` also runs on PRs as a **build-only** validation — every step guards on `github.event_name != 'pull_request'`, so nothing is pushed or signed; it exists to catch a broken `Dockerfile` or action bump before a release. CI-style workflows cancel superseded runs via `concurrency`; `docker-publish.yml` deliberately has no concurrency group so an in-flight publish is never cancelled.
+
+Lint locally with the same version CI uses:
+
+```bash
+docker run --rm -v "$PWD":/app -w /app golangci/golangci-lint:v2.12.2 golangci-lint run ./...
+```
 
 `go` is **not installed** in the WSL dev environment, but `docker` is. To run the CI checks locally, use the official image (`-buildvcs=false` avoids a git-ownership error on the bind mount, and `-race` needs the non-alpine image for cgo; the named volume keeps the module cache warm between runs):
 
@@ -54,9 +61,9 @@ dahua.Listen ──onEvent()──> mqtt.Publish ──queue──> mqtt.Process
 
 ## Release flow
 
-`release-agent.yml` runs `scripts/release-agent.sh` weekly (Mondays 09:00 UTC) or on dispatch: it diffs commits since the latest tag, derives the bump per Conventional Commits (a `!` marker after the type/scope or a `BREAKING CHANGE` footer → major, `feat` → minor, otherwise patch — detected from `--format=%s`/`%B`, since `--oneline`'s hash prefix defeats subject anchors), and opens or updates an issue labeled `release-agent`. Adding the `release-approved` label to that issue triggers `release-publish.yml`, which cuts the GitHub release and calls `docker-publish.yml` to build, push, and cosign-sign the image to `ghcr.io`. Issue title/body reach the workflow shell via `env:` — never template `${{ github.event.issue.* }}` into a `run:` script; the body carries commit text.
+`release-agent.yml` runs `scripts/release-agent.sh` weekly (Mondays 09:00 UTC) or on dispatch: it diffs commits since the latest tag, derives the bump per Conventional Commits (a `!` marker after the type/scope or a `BREAKING CHANGE` footer → major, `feat` → minor, otherwise patch — detected from `--format=%s`/`%B`, since `--oneline`'s hash prefix defeats subject anchors), and opens or updates an issue labeled `release-agent`. The proposal records the HEAD SHA it was generated from (`**Commit:**` line). Adding the `release-approved` label triggers `release-publish.yml`, which tags **that recorded commit** (not main's tip — commits landing after review don't ship), cuts the GitHub release, calls `docker-publish.yml` to build, push, and cosign-sign the image, then verifies the version manifest actually exists on ghcr before closing the issue; any failure comments on the issue with the run link. Issue title/body reach the workflow shell via `env:` — never template `${{ github.event.issue.* }}` into a `run:` script; the body carries commit text.
 
-Images are tagged `vX.Y.Z` + `latest` (linux/amd64 + linux/arm64) on every publish path: the approval flow above (`workflow_call` — the tag it creates comes from `GITHUB_TOKEN`, which GitHub never lets trigger other workflows, hence the explicit call), a hand-pushed `v*.*.*` tag (image only — no GitHub release), or Actions → Docker → Run workflow with a version to re-publish an existing tag (the recovery knob for a release whose docker leg failed, like v0.1.2/v0.1.3).
+Images carry SLSA provenance (`mode=max`) and SBOM attestations on the index, and are tagged `vX.Y.Z` + `latest` (linux/amd64 + linux/arm64) on every publish path: the approval flow above (`workflow_call` — the tag it creates comes from `GITHUB_TOKEN`, which GitHub never lets trigger other workflows, hence the explicit call), a hand-pushed `v*.*.*` tag (image only — no GitHub release), or Actions → Docker → Run workflow with a version to re-publish an existing tag (the recovery knob for a release whose docker leg failed, like v0.1.2/v0.1.3).
 
 ## Docker
 

@@ -9,10 +9,16 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs when a PR is force-pushed or updated.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
