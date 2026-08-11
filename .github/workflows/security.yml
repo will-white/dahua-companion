@@ -27,3 +27,14 @@ jobs:
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+  # Fails a PR that introduces dependencies with known vulnerabilities.
+  # The event only carries a base/head diff on pull_request.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v5
