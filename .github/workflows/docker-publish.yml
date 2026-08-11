@@ -12,13 +12,26 @@ on:
   # action bump before it reaches a release tag.
   pull_request:
     branches: [ "main" ]
-  # Publishing only happens through release-publish.yml calling this workflow;
-  # a manually pushed tag no longer builds an image, which keeps a single tag
-  # scheme (vX.Y.Z + latest).
+  # The routine path: release-publish.yml calls this workflow after a release
+  # proposal is approved. The tag it releases from is created with
+  # GITHUB_TOKEN, which GitHub never lets trigger other workflows - hence the
+  # explicit call rather than relying on the push trigger below.
   workflow_call:
     inputs:
       version:
         description: "Version tag to build (e.g. v1.2.3)"
+        required: true
+        type: string
+  # Manual paths, publishing the same vX.Y.Z + latest scheme: hand-pushing a
+  # semver tag (note: this publishes an image but creates no GitHub release),
+  # or dispatching with a version to (re)build an existing tag - the recovery
+  # knob for a release whose docker leg failed.
+  push:
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing tag to (re)build and publish (e.g. v1.2.3)"
         required: true
         type: string
 
@@ -41,6 +54,16 @@ jobs:
       id-token: write
 
     steps:
+      - name: Validate version input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "$VERSION"; then
+            echo "::error::version must look like v1.2.3 (got: $VERSION)"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -82,10 +105,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Releases arrive via workflow_call with an explicit version, so tag
-          # exactly vX.Y.Z + latest; pr-N only labels the unpushed PR build.
+          # One scheme on every publish path: vX.Y.Z, plus latest (from the
+          # default latest=auto flavor on tag pushes, and from the raw rule on
+          # called/dispatched runs). pr-N only labels the unpushed PR build.
           tags: |
             type=ref,event=pr
+            type=semver,pattern=v{{version}}
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=raw,value=latest,enable=${{ inputs.version != '' }}
 

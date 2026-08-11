@@ -56,7 +56,7 @@ dahua.Listen ──onEvent()──> mqtt.Publish ──queue──> mqtt.Process
 
 `release-agent.yml` runs `scripts/release-agent.sh` weekly (Mondays 09:00 UTC) or on dispatch: it diffs commits since the latest tag, derives the bump per Conventional Commits (a `!` marker after the type/scope or a `BREAKING CHANGE` footer → major, `feat` → minor, otherwise patch — detected from `--format=%s`/`%B`, since `--oneline`'s hash prefix defeats subject anchors), and opens or updates an issue labeled `release-agent`. Adding the `release-approved` label to that issue triggers `release-publish.yml`, which cuts the GitHub release and calls `docker-publish.yml` to build, push, and cosign-sign the image to `ghcr.io`. Issue title/body reach the workflow shell via `env:` — never template `${{ github.event.issue.* }}` into a `run:` script; the body carries commit text.
 
-Images publish **only** through this flow (there is no tag-push trigger) and are tagged `vX.Y.Z` + `latest`, built for linux/amd64 and linux/arm64.
+Images are tagged `vX.Y.Z` + `latest` (linux/amd64 + linux/arm64) on every publish path: the approval flow above (`workflow_call` — the tag it creates comes from `GITHUB_TOKEN`, which GitHub never lets trigger other workflows, hence the explicit call), a hand-pushed `v*.*.*` tag (image only — no GitHub release), or Actions → Docker → Run workflow with a version to re-publish an existing tag (the recovery knob for a release whose docker leg failed, like v0.1.2/v0.1.3).
 
 ## Docker
 
