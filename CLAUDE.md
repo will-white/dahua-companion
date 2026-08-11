@@ -54,7 +54,7 @@ dahua.Listen ──onEvent()──> mqtt.Publish ──queue──> mqtt.Process
 
 ## Release flow
 
-`release-agent.yml` runs `scripts/release-agent.sh` weekly (Mondays 09:00 UTC) or on dispatch: it diffs commits since the latest tag, picks major/minor/patch from `BREAKING CHANGE` / `feat` prefixes, and opens or updates an issue labeled `release-agent`. Adding the `release-approved` label to that issue triggers `release-publish.yml`, which cuts the GitHub release and calls `docker-publish.yml` to build, push, and cosign-sign the image to `ghcr.io`. Issue title/body reach the workflow shell via `env:` — never template `${{ github.event.issue.* }}` into a `run:` script; the body carries commit text.
+`release-agent.yml` runs `scripts/release-agent.sh` weekly (Mondays 09:00 UTC) or on dispatch: it diffs commits since the latest tag, derives the bump per Conventional Commits (a `!` marker after the type/scope or a `BREAKING CHANGE` footer → major, `feat` → minor, otherwise patch — detected from `--format=%s`/`%B`, since `--oneline`'s hash prefix defeats subject anchors), and opens or updates an issue labeled `release-agent`. Adding the `release-approved` label to that issue triggers `release-publish.yml`, which cuts the GitHub release and calls `docker-publish.yml` to build, push, and cosign-sign the image to `ghcr.io`. Issue title/body reach the workflow shell via `env:` — never template `${{ github.event.issue.* }}` into a `run:` script; the body carries commit text.
 
 Images publish **only** through this flow (there is no tag-push trigger) and are tagged `vX.Y.Z` + `latest`, built for linux/amd64 and linux/arm64.
 
