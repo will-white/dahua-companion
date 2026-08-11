@@ -1,19 +1,32 @@
 package mqtt
 
 import (
+	"context"
+	"time"
+
 	"dahua_companion/pkg/config"
-	"sync/atomic"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog/log"
 )
 
-var IsConnected int32
+// maxEventAge is how long a doorbell event stays worth delivering: a press
+// only matters while someone might still be at the door.
+const maxEventAge = 30 * time.Second
+
+// reconnectPoll is how often to re-check the connection while holding an
+// undelivered event.
+const reconnectPoll = time.Second
+
+type event struct {
+	payload  string
+	received time.Time
+}
 
 type Client struct {
 	client mqtt.Client
 	cfg    *config.Mqtt
-	queue  chan string
+	queue  chan event
 }
 
 func New(cfg *config.Mqtt) *Client {
@@ -22,47 +35,80 @@ func New(cfg *config.Mqtt) *Client {
 	opts.SetClientID(cfg.ClientID)
 	opts.SetUsername(cfg.Username)
 	opts.SetPassword(cfg.Password)
+	// Keep trying if the broker isn't up yet (e.g. compose boot order) instead
+	// of crashing; /health reports the degraded state in the meantime.
+	opts.SetConnectRetry(true)
+	opts.SetConnectRetryInterval(5 * time.Second)
+	// The default reconnect ceiling of 10 minutes is far too slow for a doorbell.
+	opts.SetMaxReconnectInterval(30 * time.Second)
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatal().Err(token.Error()).Msg("Failed to connect to MQTT broker")
-	}
-	return &Client{client: client, cfg: cfg, queue: make(chan string, 100)}
+	token := client.Connect()
+	go func() {
+		// With ConnectRetry the token only fails on non-retryable errors, e.g.
+		// no valid broker URL.
+		if token.Wait() && token.Error() != nil {
+			log.Error().Err(token.Error()).Msg("Failed to connect to MQTT broker")
+		}
+	}()
+	return &Client{client: client, cfg: cfg, queue: make(chan event, 100)}
 }
 
+// IsConnected reports whether the client currently has an open broker connection.
+func (c *Client) IsConnected() bool {
+	return c.client.IsConnectionOpen()
+}
+
+// Publish queues a doorbell event for delivery. It never blocks: if the queue
+// is full the event is dropped.
 func (c *Client) Publish(message string) {
 	select {
-	case c.queue <- message:
+	case c.queue <- event{payload: message, received: time.Now()}:
 		log.Info().Msg("Message queued")
 	default:
-		log.Warn().Msg("Queue is full. Dropping oldest message and adding new one.")
-		// Remove the oldest message.
-		<-c.queue
-		// Add the new message.
-		c.queue <- message
+		log.Warn().Msg("Queue is full; dropping event")
 	}
 }
 
-func (c *Client) ProcessQueue(shutdown chan struct{}) {
+// ProcessQueue delivers queued events until ctx is cancelled. While the broker
+// is unreachable it holds the current event and waits instead of spinning, and
+// events older than maxEventAge are dropped rather than delivered late.
+func (c *Client) ProcessQueue(ctx context.Context) {
 	for {
 		select {
-		case <-shutdown:
+		case <-ctx.Done():
 			return
-		case msg := <-c.queue:
-			if atomic.LoadInt32(&IsConnected) == 1 {
-				if token := c.client.Publish(c.cfg.Topic, 0, false, msg); token.Wait() && token.Error() != nil {
-					log.Error().Err(token.Error()).Msg("Failed to publish message to MQTT broker")
-				} else {
-					log.Info().Msg("Message published from queue")
-				}
-			} else {
-				// If not connected, requeue the message. This is a simple approach.
-				// A more advanced implementation might use a different strategy.
-				c.Publish(msg)
-			}
+		case ev := <-c.queue:
+			c.deliver(ctx, ev)
 		}
 	}
+}
+
+func (c *Client) deliver(ctx context.Context, ev event) {
+	for !c.client.IsConnectionOpen() {
+		if ctx.Err() != nil {
+			return
+		}
+		if time.Since(ev.received) > maxEventAge {
+			log.Warn().Msg("Broker unreachable; dropping stale doorbell event")
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(reconnectPoll):
+		}
+	}
+	if time.Since(ev.received) > maxEventAge {
+		log.Warn().Msg("Dropping stale doorbell event")
+		return
+	}
+	if token := c.client.Publish(c.cfg.Topic, 0, false, ev.payload); token.Wait() && token.Error() != nil {
+		log.Error().Err(token.Error()).Msg("Failed to publish message to MQTT broker")
+		return
+	}
+	log.Info().Msg("Message published from queue")
 }
 
 func (c *Client) Disconnect() {
@@ -70,11 +116,9 @@ func (c *Client) Disconnect() {
 }
 
 func connectHandler(client mqtt.Client) {
-	atomic.StoreInt32(&IsConnected, 1)
 	log.Info().Msg("Connected to MQTT broker")
 }
 
 func connectLostHandler(client mqtt.Client, err error) {
-	atomic.StoreInt32(&IsConnected, 0)
 	log.Error().Err(err).Msg("Connection lost to MQTT broker")
 }
