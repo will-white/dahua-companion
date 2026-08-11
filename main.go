@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -17,12 +21,18 @@ import (
 )
 
 func main() {
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /health endpoint and exit; used by the Docker HEALTHCHECK")
+	flag.Parse()
+	if *healthcheck {
+		os.Exit(runHealthcheck())
+	}
+
 	logger.Init()
 	cfg := config.Load()
 
 	mqttClient := mqtt.New(&cfg.Mqtt)
 	dahuaClient := dahua.New(&cfg.Dahua)
-	healthServer := health.New(":8080", mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
+	healthServer := health.New(":"+cfg.HealthPort, mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
 	healthServer.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -55,4 +65,26 @@ func main() {
 	}
 
 	log.Info().Msg("Shutdown complete")
+}
+
+// runHealthcheck probes the local health endpoint. It backs the Docker
+// HEALTHCHECK, since the scratch image has no shell or curl. It deliberately
+// avoids config.Load: a healthcheck should not require full configuration.
+func runHealthcheck() int {
+	port := os.Getenv("HEALTH_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/health", port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "health status %d\n", res.StatusCode)
+		return 1
+	}
+	return 0
 }

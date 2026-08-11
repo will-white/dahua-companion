@@ -21,8 +21,9 @@ type Dahua struct {
 }
 
 type Config struct {
-	Mqtt  Mqtt
-	Dahua Dahua
+	Mqtt       Mqtt
+	Dahua      Dahua
+	HealthPort string `envconfig:"HEALTH_PORT" default:"8080"`
 }
 
 func Load() *Config {
