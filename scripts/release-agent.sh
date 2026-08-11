@@ -76,12 +76,17 @@ echo "Proposed version: $NEW_TAG"
 # Generate Markdown Report
 OUTPUT_FILE="release_proposal.md"
 
+# Recorded so release-publish can tag exactly the commit this proposal was
+# reviewed against, even if main moves before the approval label lands.
+COMMIT_SHA=$(git rev-parse HEAD)
+
 cat <<EOF > "$OUTPUT_FILE"
 # Release Proposal
 
 **Latest Tag:** $LATEST_TAG
 **Proposed Tag:** $NEW_TAG
 **Update Type:** $BUMP
+**Commit:** $COMMIT_SHA
 
 ## Changes
 

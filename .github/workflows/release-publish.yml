@@ -12,9 +12,9 @@ jobs:
   publish-release:
     if: github.event.label.name == 'release-approved' && contains(github.event.issue.labels.*.name, 'release-agent')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-      issues: write
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
@@ -40,18 +40,15 @@ jobs:
           VERSION: ${{ steps.get_version.outputs.version }}
           NOTES: ${{ github.event.issue.body }}
         run: |
+          # Tag the commit the proposal recorded, so commits that landed after
+          # review don't ship unreviewed. Proposals that predate the Commit
+          # line fall back to main.
+          TARGET=$(grep -oE '^\*\*Commit:\*\* [0-9a-f]{40}' <<< "$NOTES" | grep -oE '[0-9a-f]{40}' | head -1 || true)
+          echo "Releasing $VERSION at ${TARGET:-main}"
           gh release create "$VERSION" \
-            --target main \
+            --target "${TARGET:-main}" \
             --title "$VERSION" \
             --notes "$NOTES"
-
-      - name: Close Issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.get_version.outputs.version }}
-          ISSUE: ${{ github.event.issue.number }}
-        run: |
-          gh issue close "$ISSUE" --comment "🚀 Release $VERSION has been published!"
 
   call-docker-publish:
     needs: publish-release
@@ -62,3 +59,56 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
+  # A release whose image never made it to the registry has failed, even if
+  # every step reported success (it happened for v0.1.2 and v0.1.3).
+  verify-image:
+    needs: [publish-release, call-docker-publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      packages: read
+    steps:
+      - name: Verify manifest on ghcr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.publish-release.outputs.version }}
+        run: |
+          echo "$GH_TOKEN" | docker login "$REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+          docker manifest inspect "$REGISTRY/$IMAGE_NAME:$VERSION" > /dev/null
+          echo "$REGISTRY/$IMAGE_NAME:$VERSION is live"
+
+  close-issue:
+    needs: [publish-release, verify-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Close Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.publish-release.outputs.version }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh issue close "$ISSUE" --comment "🚀 Release $VERSION has been published and the image verified on ghcr!"
+
+  # Make a broken release impossible to miss: any failure above lands as a
+  # comment on the proposal issue with a link to the run.
+  report-failure:
+    if: failure()
+    needs: [publish-release, call-docker-publish, verify-image, close-issue]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE" --body "⚠️ The release pipeline failed: $RUN_URL — fix and re-run, or use the Docker workflow's manual dispatch to re-publish the image."
