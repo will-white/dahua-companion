@@ -22,24 +22,31 @@ fi
 
 echo "Latest tag: $LATEST_TAG"
 
-# Get commits since last tag
-# If v0.0.0, get all commits
-if [ "$LATEST_TAG" = "v0.0.0" ]; then
-    COMMITS=$(git log --oneline)
-else
-    COMMITS=$(git log "$LATEST_TAG"..HEAD --oneline)
+# Commit range since the last tag (all commits if no tag exists yet)
+RANGE=()
+if [ "$LATEST_TAG" != "v0.0.0" ]; then
+    RANGE=("$LATEST_TAG..HEAD")
 fi
+
+# --oneline is for the human-readable changes list only. Bump detection uses
+# --format=%s / %B: the abbreviated hash prefixing every --oneline line means
+# a subject pattern like ^feat can never match there, and body footers do not
+# appear in --oneline output at all.
+COMMITS=$(git log "${RANGE[@]}" --oneline)
+SUBJECTS=$(git log "${RANGE[@]}" --format=%s)
+BODIES=$(git log "${RANGE[@]}" --format=%B)
 
 if [ -z "$COMMITS" ]; then
     echo "No changes since $LATEST_TAG"
     exit 0
 fi
 
-# Determine bump type
+# Determine bump type per Conventional Commits: a ! after the type/scope or a
+# breaking-change footer is major, feat is minor, everything else is patch.
 BUMP="patch"
-if echo "$COMMITS" | grep -q "BREAKING CHANGE"; then
+if grep -qE '^[A-Za-z]+(\([^)]*\))?!:' <<< "$SUBJECTS" || grep -qE '^BREAKING[- ]CHANGE:' <<< "$BODIES"; then
     BUMP="major"
-elif echo "$COMMITS" | grep -q "^feat"; then
+elif grep -qE '^feat(\([^)]*\))?:' <<< "$SUBJECTS"; then
     BUMP="minor"
 fi
 
@@ -69,12 +76,17 @@ echo "Proposed version: $NEW_TAG"
 # Generate Markdown Report
 OUTPUT_FILE="release_proposal.md"
 
+# Recorded so release-publish can tag exactly the commit this proposal was
+# reviewed against, even if main moves before the approval label lands.
+COMMIT_SHA=$(git rev-parse HEAD)
+
 cat <<EOF > "$OUTPUT_FILE"
 # Release Proposal
 
 **Latest Tag:** $LATEST_TAG
 **Proposed Tag:** $NEW_TAG
 **Update Type:** $BUMP
+**Commit:** $COMMIT_SHA
 
 ## Changes
 

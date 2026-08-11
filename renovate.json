@@ -2,5 +2,20 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "The Go version is declared in three places: the go.mod toolchain directive, the Dockerfile builder image, and the dev container image. Renovate sees them as three unrelated dependencies, so group them into one PR to keep them moving together. scripts/check-go-version.sh fails CI if they drift apart anyway.",
+      "groupName": "go version",
+      "matchDatasources": [
+        "golang-version",
+        "docker"
+      ],
+      "matchPackageNames": [
+        "go",
+        "golang",
+        "mcr.microsoft.com/devcontainers/go"
+      ]
+    }
   ]
 }

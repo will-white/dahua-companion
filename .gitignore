@@ -23,5 +23,6 @@
 go.work
 go.work.sum
 
-# env file
+# env files (copy .env.example; .env and .env.local hold real credentials)
+.env
 .env.local

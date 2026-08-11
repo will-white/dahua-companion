@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,52 +21,70 @@ import (
 )
 
 func main() {
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /health endpoint and exit; used by the Docker HEALTHCHECK")
+	flag.Parse()
+	if *healthcheck {
+		os.Exit(runHealthcheck())
+	}
+
 	logger.Init()
 	cfg := config.Load()
 
 	mqttClient := mqtt.New(&cfg.Mqtt)
 	dahuaClient := dahua.New(&cfg.Dahua)
-	healthServer := health.New(dahuaClient)
+	healthServer := health.New(":"+cfg.HealthPort, mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
+	healthServer.Start()
 
-	healthServer.ListenAndServe()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// Channel to signal shutdown
-	shutdown := make(chan struct{})
-	messageChan := make(chan string)
-
-	go dahuaClient.Listen(shutdown, messageChan)
-	go mqttClient.ProcessQueue(shutdown)
-
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		for {
-			select {
-			case <-shutdown:
-				return
-			case msg := <-messageChan:
-				mqttClient.Publish(msg)
-			}
-		}
+		defer wg.Done()
+		// The event itself is the signal; there is no payload.
+		dahuaClient.Listen(ctx, func() { mqttClient.Publish("") })
+	}()
+	go func() {
+		defer wg.Done()
+		mqttClient.ProcessQueue(ctx)
 	}()
 
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	<-sigChan
+	<-ctx.Done()
 	log.Info().Msg("Shutting down...")
+	// Restore default signal handling so a second signal kills immediately.
+	stop()
 
-	// Signal the shutdown of the HTTP stream loop
-	close(shutdown)
-
-	// Close MQTT connection
+	wg.Wait()
 	mqttClient.Disconnect()
 
-	// Close HTTP server
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := healthServer.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("HTTP server Shutdown")
+	if err := healthServer.Shutdown(shutdownCtx); err != nil {
+		log.Error().Err(err).Msg("Health server shutdown failed")
 	}
 
 	log.Info().Msg("Shutdown complete")
+}
+
+// runHealthcheck probes the local health endpoint. It backs the Docker
+// HEALTHCHECK, since the scratch image has no shell or curl. It deliberately
+// avoids config.Load: a healthcheck should not require full configuration.
+func runHealthcheck() int {
+	port := os.Getenv("HEALTH_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/health", port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "health status %d\n", res.StatusCode)
+		return 1
+	}
+	return 0
 }

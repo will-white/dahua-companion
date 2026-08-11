@@ -2,32 +2,49 @@ package health
 
 import (
 	"context"
-	"dahua_companion/pkg/dahua"
-	"dahua_companion/pkg/mqtt"
 	"fmt"
 	"net/http"
-	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
+// probeTimeout bounds the live camera check; the shared Dahua HTTP client has
+// no client-wide timeout because of the long-poll event stream.
+const probeTimeout = 5 * time.Second
+
 type Server struct {
-	server      *http.Server
-	dahuaClient *dahua.Client
+	server         *http.Server
+	mqttConnected  func() bool
+	dahuaConnected func() bool
+	probe          func(context.Context) error
 }
 
-func New(dahuaClient *dahua.Client) *Server {
-	server := &http.Server{Addr: ":8080"}
-	s := &Server{server: server, dahuaClient: dahuaClient}
-	http.HandleFunc("/health", s.healthCheckHandler())
+// New builds the health server. mqttConnected and dahuaConnected report the
+// broker and event stream connection states; probe performs a live read-only
+// check against the camera.
+func New(addr string, mqttConnected, dahuaConnected func() bool, probe func(context.Context) error) *Server {
+	mux := http.NewServeMux()
+	s := &Server{
+		server: &http.Server{
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+		},
+		mqttConnected:  mqttConnected,
+		dahuaConnected: dahuaConnected,
+		probe:          probe,
+	}
+	mux.HandleFunc("/health", s.healthCheckHandler)
 	return s
 }
 
-func (s *Server) ListenAndServe() {
+// Start serves in a background goroutine.
+func (s *Server) Start() {
 	go func() {
-		log.Info().Msg("HTTP server started on 8080")
+		log.Info().Str("addr", s.server.Addr).Msg("Health server started")
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msgf("Could not listen on :8080")
+			log.Fatal().Err(err).Msg("Health server failed")
 		}
 	}()
 }
@@ -36,45 +53,30 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-func (s *Server) dahuaHealthCheck() string {
+func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	statusCode := http.StatusOK
+
+	mqttStatus := "connected"
+	if !s.mqttConnected() {
+		mqttStatus = "disconnected"
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	streamStatus := "connected"
+	if !s.dahuaConnected() {
+		streamStatus = "disconnected"
+		statusCode = http.StatusServiceUnavailable
+	}
+
 	doorbellStatus := "okay"
-	url := fmt.Sprintf("http://%s/cgi-bin/configManager.cgi?action=setConfig&VSP_PaaS.Online=true", s.dahuaClient.Cfg.Host)
-	res, err := s.dahuaClient.HttpClient.Get(url)
-	if err != nil {
-		log.Error().Err(err).Msg("client: error making http request")
-		doorbellStatus = "HTTP Request Error"
-	} else if res.StatusCode != http.StatusOK {
-		log.Error().Int("status_code", res.StatusCode).Msgf("Expected 200 response got: %d", res.StatusCode)
-		doorbellStatus = "HTTP Status Error " + res.Status
+	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
+	defer cancel()
+	if err := s.probe(ctx); err != nil {
+		log.Error().Err(err).Msg("Camera probe failed")
+		doorbellStatus = "unreachable"
+		statusCode = http.StatusServiceUnavailable
 	}
-	return doorbellStatus
-}
 
-func (s *Server) healthCheckHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		statusCode := http.StatusOK
-		mqttStatus := "connected"
-		if atomic.LoadInt32(&mqtt.IsConnected) != 1 {
-			mqttStatus = "disconnected"
-			statusCode = http.StatusServiceUnavailable
-		}
-
-		httpStatus := "connected"
-		if atomic.LoadInt32(&dahua.IsConnected) != 1 {
-			httpStatus = "disconnected"
-			statusCode = http.StatusServiceUnavailable
-		}
-
-		doorbellStatus := s.dahuaHealthCheck()
-		if doorbellStatus != "okay" {
-			statusCode = http.StatusServiceUnavailable
-		}
-
-		if statusCode != http.StatusOK {
-			status := fmt.Sprintf("MQTT: %s, HTTP: %s, Doorbell: %s", mqttStatus, httpStatus, doorbellStatus)
-			w.Write([]byte(status))
-		}
-
-		w.WriteHeader(statusCode)
-	}
+	w.WriteHeader(statusCode)
+	fmt.Fprintf(w, "MQTT: %s, HTTP: %s, Doorbell: %s", mqttStatus, streamStatus, doorbellStatus)
 }

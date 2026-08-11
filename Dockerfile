@@ -15,8 +15,8 @@ RUN go mod download
 COPY . .
 
 # Disables C dependencies for portability.
-ENV CGO_ENABLED=0  
-# y using the build flags -s and -w, we remove the symbol table and DWARF debugging information, which shrinks the size of the binary.
+ENV CGO_ENABLED=0
+# By using the build flags -s and -w, we remove the symbol table and DWARF debugging information, which shrinks the size of the binary.
 RUN go build -ldflags="-s -w" -o main .
 
 RUN adduser -D scratchuser
@@ -25,6 +25,9 @@ RUN adduser -D scratchuser
 FROM scratch
 
 COPY --from=builder /etc/passwd /etc/passwd
+
+# CA bundle so an MQTT broker over TLS (ssl://) can be verified.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 USER scratchuser
 
@@ -35,6 +38,9 @@ COPY --from=builder /app/main .
 
 # Expose port 8080 to the outside world
 EXPOSE 8080
+
+# scratch has no shell or curl, so the binary probes its own /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["/app/main", "-healthcheck"]
 
 # Command to run the executable
 CMD ["./main"]

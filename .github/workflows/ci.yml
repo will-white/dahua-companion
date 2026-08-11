@@ -6,12 +6,26 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
+# Cancel superseded runs when a PR is force-pushed or updated.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+
+      # Runs before the Go setup on purpose: it needs no toolchain, and a
+      # drifted go.mod is exactly what setup-go would silently resolve past.
+      - name: Check Go version sync
+        run: ./scripts/check-go-version.sh
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -21,11 +35,19 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Tidy check
+        run: go mod tidy -diff
+
       - name: Build
         run: go build -v ./...
 
       - name: Vet
         run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
 
       - name: Format Check
         run: |
