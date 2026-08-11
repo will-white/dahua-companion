@@ -8,26 +8,26 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
-permissions:
-  contents: write
-  issues: write
-  packages: write
-  id-token: write
-
 jobs:
   publish-release:
     if: github.event.label.name == 'release-approved' && contains(github.event.issue.labels.*.name, 'release-agent')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
+      # Issue title and body are untrusted input (they carry commit text) and
+      # must reach the shell via env, never by templating them into the script.
       - name: Extract Version
         id: get_version
+        env:
+          TITLE: ${{ github.event.issue.title }}
         run: |
-          TITLE="${{ github.event.issue.title }}"
-          VERSION=$(echo "$TITLE" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+')
+          VERSION=$(grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+' <<< "$TITLE" | head -1)
           if [ -z "$VERSION" ]; then
             echo "Error: Could not extract version from title '$TITLE'"
             exit 1
@@ -38,18 +38,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.version }}
+          NOTES: ${{ github.event.issue.body }}
         run: |
           gh release create "$VERSION" \
             --target main \
             --title "$VERSION" \
-            --notes "${{ github.event.issue.body }}"
+            --notes "$NOTES"
 
       - name: Close Issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.version }}
+          ISSUE: ${{ github.event.issue.number }}
         run: |
-          gh issue close ${{ github.event.issue.number }} --comment "🚀 Release $VERSION has been published!"
+          gh issue close "$ISSUE" --comment "🚀 Release $VERSION has been published!"
 
   call-docker-publish:
     needs: publish-release
