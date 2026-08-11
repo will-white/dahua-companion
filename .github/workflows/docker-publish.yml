@@ -127,6 +127,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # SLSA build provenance and an SBOM, attached to the image index as
+          # attestation manifests (in addition to the cosign signature below).
+          provenance: mode=max
+          sbom: true
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker
