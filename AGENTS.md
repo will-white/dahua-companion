@@ -8,7 +8,7 @@ You are a senior software architect specializing in Go (Golang), MQTT protocols,
 
 ## Tech Stack
 
-- **Language:** Go (v1.24+)
+- **Language:** Go (toolchain version pinned in `go.mod`)
 - **Containerization:** Docker
 - **Protocols:** MQTT, HTTP (Long Polling, Digest Auth)
 - **Key Libraries:**
