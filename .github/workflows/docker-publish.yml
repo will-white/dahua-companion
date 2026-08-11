@@ -8,6 +8,12 @@ name: Docker
 on:
   push:
     tags: [ 'v*.*.*' ]
+  # Build-only validation on PRs: the steps below already guard on
+  # github.event_name != 'pull_request', so nothing is logged into the
+  # registry, pushed, or signed. This is what catches a broken Dockerfile or
+  # action bump before it reaches a release tag.
+  pull_request:
+    branches: [ "main" ]
   workflow_call:
     inputs:
       version:
