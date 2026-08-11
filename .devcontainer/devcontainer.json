@@ -15,7 +15,7 @@
         // The Go image ships no Node. The Claude Code feature can install one
         // itself, but that fallback lands on Node 18 — install a current LTS
         // explicitly instead. installsAfter ordering is handled by the feature.
-        "ghcr.io/devcontainers/features/node:1": {},
+        "ghcr.io/devcontainers/features/node:2": {},
         // Installs the Claude Code CLI, and the Claude Code VS Code extension
         // when opened in VS Code / Codespaces. The :1.0 tag pins the feature's
         // install script, not the CLI version — the CLI self-updates.
