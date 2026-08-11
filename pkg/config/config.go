@@ -14,9 +14,13 @@ type Mqtt struct {
 	Topic    string `envconfig:"MQTT_TOPIC" default:"doorbell/pressed"`
 }
 
+// The camera credentials are prefixed DAHUA_ on purpose: bare USERNAME and
+// PASSWORD collide with variables the surrounding environment may already set
+// (Windows always exports USERNAME), and real environment variables win over
+// .env files.
 type Dahua struct {
-	Username string `envconfig:"USERNAME" required:"true"`
-	Password string `envconfig:"PASSWORD" required:"true"`
+	Username string `envconfig:"DAHUA_USERNAME" required:"true"`
+	Password string `envconfig:"DAHUA_PASSWORD" required:"true"`
 	Host     string `envconfig:"HOSTNAME_OR_IP" required:"true"`
 }
 
