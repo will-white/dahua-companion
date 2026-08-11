@@ -29,7 +29,7 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | yes | MQTT credentials |
 | `MQTT_TOPIC` | no | defaults to `doorbell/pressed` |
 | `HOSTNAME_OR_IP` | yes | camera hostname or IP |
-| `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials |
+| `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |
 | `APP_ENV` | no | `development` switches to human-readable console logs |
 

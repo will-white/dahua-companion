@@ -34,7 +34,7 @@ docker run --rm -v "$PWD":/app -w /app -v dahua-gomodcache:/go/pkg/mod \
 
 Required (`envconfig`, fatal if missing): `MQTT_BROKER_URL`, `MQTT_CLIENT_ID`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `HOSTNAME_OR_IP`, `DAHUA_USERNAME`, `DAHUA_PASSWORD`. Optional: `MQTT_TOPIC` (default `doorbell/pressed`), `HEALTH_PORT` (default `8080`), `APP_ENV=development` for human-readable console logging instead of JSON.
 
-The camera credentials are deliberately prefixed `DAHUA_` — bare `USERNAME`/`PASSWORD` collide with variables the surrounding environment may already export, and real env vars beat `.env` files.
+The camera credentials are deliberately prefixed `DAHUA_` — bare `USERNAME`/`PASSWORD` collide with variables the surrounding environment may already export, and real env vars beat `.env` files. `config.Load()` still honors the legacy bare names as a deprecated fallback (warned at startup, new names win when both are set); the fallback is slated for removal in a future release.
 
 ## Architecture
 
