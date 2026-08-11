@@ -15,9 +15,10 @@ cd "$(dirname "$0")/.."
 fail() { echo "::error::$*" >&2; FAILED=1; }
 FAILED=0
 
-GOMOD=$(grep -oP '^toolchain go\K\d+\.\d+\.\d+' go.mod || true)
-DOCKER=$(grep -oP '^FROM golang:\K\d+\.\d+\.\d+' Dockerfile || true)
-DEVC=$(grep -oP 'devcontainers/go:\d+-\K\d+\.\d+' .devcontainer/devcontainer.json || true)
+# sed -nE rather than GNU grep -P, so the script also runs on macOS/BSD.
+GOMOD=$(sed -nE 's/^toolchain go([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p' go.mod | head -1)
+DOCKER=$(sed -nE 's/^FROM golang:([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p' Dockerfile | head -1)
+DEVC=$(sed -nE 's|.*devcontainers/go:[0-9]+-([0-9]+\.[0-9]+).*|\1|p' .devcontainer/devcontainer.json | head -1)
 
 [ -n "$GOMOD" ]  || fail "could not read 'toolchain goX.Y.Z' from go.mod"
 [ -n "$DOCKER" ] || fail "could not read 'FROM golang:X.Y.Z' from Dockerfile"
