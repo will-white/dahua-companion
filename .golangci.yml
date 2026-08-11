@@ -1,0 +1,9 @@
+# golangci-lint v2 config. Default linters (errcheck, govet, ineffassign,
+# staticcheck, unused) with the standard exclusion preset, which covers the
+# conventional unchecked errors: deferred Close, fmt.Fprint* to writers,
+# os.Setenv in tests, and the like.
+version: "2"
+linters:
+  exclusions:
+    presets:
+      - std-error-handling

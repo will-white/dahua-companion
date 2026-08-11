@@ -34,8 +34,9 @@ type Config struct {
 }
 
 func Load() *Config {
-	godotenv.Load(".env.local")
-	godotenv.Load()
+	// The .env files are optional local overrides; a missing file is fine.
+	_ = godotenv.Load(".env.local")
+	_ = godotenv.Load()
 
 	var c Config
 	err := envconfig.Process("", &c)
