@@ -43,13 +43,21 @@ func New(cfg *config.Mqtt) *Client {
 	opts.SetMaxReconnectInterval(30 * time.Second)
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
+	// AddBroker silently drops URLs it cannot parse. With no valid broker the
+	// connect token errors immediately and is never retried, which would leave
+	// the process permanently degraded - that is a configuration error, so
+	// fail fast instead.
+	if len(opts.Servers) == 0 {
+		log.Fatal().Str("broker", cfg.Broker).Msg("No valid MQTT broker URL configured")
+	}
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
 	go func() {
-		// With ConnectRetry the token only fails on non-retryable errors, e.g.
-		// no valid broker URL.
+		// With ConnectRetry, network failures retry forever; an error here is
+		// a terminal one (e.g. Disconnect during the initial retry loop), so
+		// log it and leave exiting to the shutdown path.
 		if token.Wait() && token.Error() != nil {
-			log.Error().Err(token.Error()).Msg("Failed to connect to MQTT broker")
+			log.Error().Err(token.Error()).Msg("MQTT connect ended without a connection")
 		}
 	}()
 	return &Client{client: client, cfg: cfg, queue: make(chan event, 100)}
