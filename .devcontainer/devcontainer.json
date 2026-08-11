@@ -1,13 +1,39 @@
 {
     "name": "Go",
-    "image": "mcr.microsoft.com/devcontainers/go:1-1.23-bookworm",
+    // Tag is <image-definition-major>-<go-minor>-<debian>. The 1- definition
+    // family stopped at Go 1.24, so tracking current Go means the 2- family.
+    // Keep the Go minor here in step with go.mod and the Dockerfile — enforced
+    // by scripts/check-go-version.sh in CI.
+    "image": "mcr.microsoft.com/devcontainers/go:2-1.26-bookworm",
+    "remoteUser": "vscode",
     // Features to add to the dev container. More info: https://containers.dev/features.
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {
             "configureZshAsDefaultShell": true
         },
-        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+        // The Go image ships no Node. The Claude Code feature can install one
+        // itself, but that fallback lands on Node 18 — install a current LTS
+        // explicitly instead. installsAfter ordering is handled by the feature.
+        "ghcr.io/devcontainers/features/node:1": {},
+        // Installs the Claude Code CLI, and the Claude Code VS Code extension
+        // when opened in VS Code / Codespaces. The :1.0 tag pins the feature's
+        // install script, not the CLI version — the CLI self-updates.
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
     },
+    // Keep the Claude Code login across container rebuilds. The volume holds
+    // ~/.claude; CLAUDE_CONFIG_DIR is what moves ~/.claude.json into it too,
+    // and without that you are signed out on every rebuild. ${devcontainerId}
+    // scopes the volume to this repo rather than sharing one across projects.
+    "mounts": [
+        "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+    ],
+    "containerEnv": {
+        "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+    },
+    // A named volume mounted at a path the image doesn't contain is created
+    // root-owned, which leaves the CLI unable to write its own config.
+    "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude",
     "forwardPorts": [
         8080
     ],

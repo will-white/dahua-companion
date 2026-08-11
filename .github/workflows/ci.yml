@@ -13,6 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Runs before the Go setup on purpose: it needs no toolchain, and a
+      # drifted go.mod is exactly what setup-go would silently resolve past.
+      - name: Check Go version sync
+        run: ./scripts/check-go-version.sh
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
