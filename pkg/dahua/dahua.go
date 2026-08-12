@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"dahua_companion/pkg/config"
 
@@ -16,10 +17,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// heartbeatSeconds asks the camera to send a "Heartbeat" line this often while
+// no events are flowing (the API accepts 1-60 and defaults to 60).
+const heartbeatSeconds = 5
+
+// streamIdleTimeout is the default stream watchdog: three missed heartbeats
+// and the connection is presumed dead.
+const streamIdleTimeout = 3 * heartbeatSeconds * time.Second
+
 type Client struct {
 	HttpClient *http.Client
 	Cfg        *config.Dahua
-	connected  atomic.Bool
+	// idleTimeout tears the event stream down when the camera has been silent
+	// for this long; heartbeats keep a healthy stream well under it.
+	idleTimeout time.Duration
+	connected   atomic.Bool
 }
 
 func New(cfg *config.Dahua) *Client {
@@ -31,7 +43,7 @@ func New(cfg *config.Dahua) *Client {
 			Password: cfg.Password,
 		},
 	}
-	return &Client{HttpClient: httpClient, Cfg: cfg}
+	return &Client{HttpClient: httpClient, Cfg: cfg, idleTimeout: streamIdleTimeout}
 }
 
 // IsConnected reports whether the event stream is currently established.
@@ -62,6 +74,10 @@ func (c *Client) Probe(ctx context.Context) error {
 // exponential backoff and calling onEvent for every doorbell press.
 func (c *Client) Listen(ctx context.Context, onEvent func()) {
 	bo := backoff.NewExponentialBackOff()
+	// The default 60s ceiling would grow the blind window during a long camera
+	// outage; attempts against a LAN camera are cheap, so retry at least every
+	// 10s.
+	bo.MaxInterval = 10 * time.Second
 	_, err := backoff.Retry(ctx, func() (struct{}, error) {
 		return struct{}{}, c.listen(ctx, bo, onEvent)
 	}, backoff.WithBackOff(bo), backoff.WithMaxElapsedTime(0))
@@ -71,17 +87,27 @@ func (c *Client) Listen(ctx context.Context, onEvent func()) {
 }
 
 func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onEvent func()) error {
-	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[AlarmLocal]&heartbeat=30", c.Cfg.Host)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[AlarmLocal]&heartbeat=%d", c.Cfg.Host, heartbeatSeconds)
+
+	// The camera speaks at least every heartbeatSeconds, so a silent stream
+	// means the connection died underneath us (camera reboot, network drop)
+	// even though the socket looks open - OS TCP keepalives take minutes to
+	// notice. The watchdog aborts the request after idleTimeout of silence so
+	// the backoff loop can rebuild the stream; arming it before Do also bounds
+	// the connect and digest handshake, which the deliberately timeout-less
+	// client leaves unbounded.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	watchdog := time.AfterFunc(c.idleTimeout, cancelStream)
+	defer watchdog.Stop()
+
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	resp, err := c.HttpClient.Do(req)
 	if err != nil {
-		if ctx.Err() == nil {
-			log.Error().Err(err).Msg("Error fetching http stream")
-		}
-		return err
+		return c.streamErr(ctx, streamCtx, err, "Error fetching http stream")
 	}
 	defer resp.Body.Close()
 
@@ -97,7 +123,7 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	// retry delay, so start the next reconnect from the shortest interval.
 	bo.Reset()
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(&watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout})
 	for scanner.Scan() {
 		if isDoorbellPressed(scanner.Text()) {
 			log.Info().Msg("Doorbell pressed")
@@ -105,12 +131,39 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if ctx.Err() == nil {
-			log.Error().Err(err).Msg("Error reading the stream")
-		}
-		return err
+		return c.streamErr(ctx, streamCtx, err, "Error reading the stream")
 	}
 	return fmt.Errorf("event stream ended")
+}
+
+// streamErr logs and returns err, naming the idle watchdog when it is what
+// killed the stream. Shutdown cancellation stays quiet.
+func (c *Client) streamErr(ctx, streamCtx context.Context, err error, msg string) error {
+	if ctx.Err() != nil {
+		return err
+	}
+	if streamCtx.Err() != nil {
+		err = fmt.Errorf("no data from camera in %s: %w", c.idleTimeout, err)
+	}
+	log.Error().Err(err).Msg(msg)
+	return err
+}
+
+// watchdogReader resets the stream watchdog on every chunk the camera sends.
+// Resetting on raw reads rather than parsed lines means heartbeats hold the
+// watchdog off no matter how the camera frames them.
+type watchdogReader struct {
+	r       io.Reader
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func (w *watchdogReader) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	if n > 0 {
+		w.timer.Reset(w.timeout)
+	}
+	return n, err
 }
 
 func isDoorbellPressed(line string) bool {
