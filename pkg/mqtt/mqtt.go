@@ -2,6 +2,8 @@ package mqtt
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,10 @@ const reconnectPoll = time.Second
 // connection would block the delivery loop indefinitely.
 const publishTimeout = 5 * time.Second
 
+// drainTimeout bounds the best-effort flush of already-queued events at
+// shutdown.
+const drainTimeout = 2 * time.Second
+
 type event struct {
 	payload  string
 	received time.Time
@@ -32,6 +38,9 @@ type Client struct {
 	client mqtt.Client
 	cfg    *config.Mqtt
 	queue  chan event
+	// reconnected wakes a deliver loop that is holding an event, instead of
+	// leaving it to the next reconnectPoll tick.
+	reconnected chan struct{}
 
 	// availabilityMu serializes availability publishes so the retained value
 	// on the broker always converges to the latest state.
@@ -40,7 +49,7 @@ type Client struct {
 }
 
 func New(cfg *config.Mqtt) *Client {
-	c := &Client{cfg: cfg, queue: make(chan event, 100)}
+	c := &Client{cfg: cfg, queue: make(chan event, 100), reconnected: make(chan struct{}, 1)}
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(cfg.Broker)
 	opts.SetClientID(cfg.ClientID)
@@ -63,9 +72,14 @@ func New(cfg *config.Mqtt) *Client {
 	opts.SetWill(cfg.AvailabilityTopic, "offline", 1, true)
 	opts.OnConnect = func(mqtt.Client) {
 		log.Info().Msg("Connected to MQTT broker")
+		select {
+		case c.reconnected <- struct{}{}:
+		default:
+		}
 		// Re-announce the current state after every (re)connect; until the
 		// event stream reports in, that is "offline".
 		c.republishAvailability()
+		c.publishDiscovery()
 	}
 	opts.OnConnectionLost = connectLostHandler
 	// AddBroker silently drops URLs it cannot parse. With no valid broker the
@@ -115,13 +129,71 @@ func (c *Client) publishAvailabilityLocked() {
 	// The ack wait happens off the lock path; delivery order is still the
 	// call order, which the lock serializes.
 	token := c.client.Publish(c.cfg.AvailabilityTopic, 1, true, payload)
+	logPublishOutcome(token, "availability "+payload)
+}
+
+// publishDiscovery announces a Home Assistant MQTT discovery config: an event
+// entity with device_class doorbell, wired to the press and availability
+// topics, retained so HA rediscovers it across restarts. No-op unless
+// MQTT_DISCOVERY_PREFIX is set.
+func (c *Client) publishDiscovery() {
+	if c.cfg.DiscoveryPrefix == "" {
+		return
+	}
+	id := sanitizeTopicID(c.cfg.ClientID)
+	payload, err := json.Marshal(map[string]any{
+		"name":        "Doorbell",
+		"unique_id":   id + "_doorbell",
+		"state_topic": c.cfg.Topic,
+		"event_types": []string{"press"},
+		// The press payload is empty; the template supplies the event JSON
+		// the HA event entity expects.
+		"value_template":     `{"event_type":"press"}`,
+		"device_class":       "doorbell",
+		"availability_topic": c.cfg.AvailabilityTopic,
+		"device": map[string]any{
+			"identifiers":  []string{id},
+			"name":         "Dahua Companion",
+			"manufacturer": "Dahua",
+		},
+		"origin": map[string]any{
+			"name": "dahua-companion",
+			"url":  "https://github.com/will-white/dahua-companion",
+		},
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal discovery config")
+		return
+	}
+	topic := c.cfg.DiscoveryPrefix + "/event/" + id + "/doorbell/config"
+	token := c.client.Publish(topic, 1, true, string(payload))
+	logPublishOutcome(token, "discovery config")
+}
+
+// sanitizeTopicID reduces the client id to the [a-zA-Z0-9_-] set that
+// discovery topic segments allow.
+func sanitizeTopicID(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
+}
+
+// logPublishOutcome waits for the broker's ack off the caller's path and logs
+// a failure; used for the retained state topics where delivery is not worth
+// blocking for but silence would hide a problem.
+func logPublishOutcome(token mqtt.Token, what string) {
 	go func() {
 		if !token.WaitTimeout(publishTimeout) {
-			log.Error().Str("state", payload).Msg("Broker did not ack availability publish in time")
+			log.Error().Str("publish", what).Msg("Broker did not ack publish in time")
 			return
 		}
 		if err := token.Error(); err != nil {
-			log.Error().Err(err).Str("state", payload).Msg("Failed to publish availability")
+			log.Error().Err(err).Str("publish", what).Msg("Publish failed")
 		}
 	}()
 }
@@ -142,16 +214,47 @@ func (c *Client) Publish(message string) {
 	}
 }
 
-// ProcessQueue delivers queued events until ctx is cancelled. While the broker
-// is unreachable it holds the current event and waits instead of spinning, and
+// ProcessQueue delivers queued events until ctx is cancelled, then makes a
+// brief best-effort attempt to flush whatever is already queued - a press that
+// arrived moments before shutdown should still ring. While the broker is
+// unreachable it holds the current event and waits instead of spinning, and
 // events older than maxEventAge are dropped rather than delivered late.
 func (c *Client) ProcessQueue(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.drain()
 			return
 		case ev := <-c.queue:
 			c.deliver(ctx, ev)
+		}
+	}
+}
+
+// drain flushes queued fresh events at shutdown, bounded by drainTimeout. It
+// never waits for a reconnect: if the broker is down the events are dropped.
+func (c *Client) drain() {
+	deadline := time.Now().Add(drainTimeout)
+	for {
+		select {
+		case ev := <-c.queue:
+			remaining := time.Until(deadline)
+			if remaining <= 0 || !c.client.IsConnectionOpen() {
+				log.Warn().Msg("Dropping queued event at shutdown")
+				continue
+			}
+			if time.Since(ev.received) > maxEventAge {
+				log.Warn().Msg("Dropping stale doorbell event")
+				continue
+			}
+			token := c.client.Publish(c.cfg.Topic, 1, false, ev.payload)
+			if !token.WaitTimeout(remaining) || token.Error() != nil {
+				log.Error().Msg("Failed to flush queued event at shutdown")
+				continue
+			}
+			log.Info().Dur("latency_ms", time.Since(ev.received)).Msg("Message published during shutdown drain")
+		default:
+			return
 		}
 	}
 }
@@ -168,6 +271,7 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.reconnected:
 		case <-time.After(reconnectPoll):
 		}
 	}

@@ -15,6 +15,9 @@ type Mqtt struct {
 	Password          string `envconfig:"MQTT_PASSWORD" required:"true"`
 	Topic             string `envconfig:"MQTT_TOPIC" default:"doorbell/pressed"`
 	AvailabilityTopic string `envconfig:"MQTT_AVAILABILITY_TOPIC" default:"doorbell/availability"`
+	// DiscoveryPrefix enables Home Assistant MQTT discovery when set (HA's
+	// default prefix is "homeassistant"); empty disables it.
+	DiscoveryPrefix string `envconfig:"MQTT_DISCOVERY_PREFIX"`
 }
 
 // The camera credentials are prefixed DAHUA_ on purpose: bare USERNAME and
