@@ -18,6 +18,10 @@ const maxEventAge = 30 * time.Second
 // undelivered event.
 const reconnectPoll = time.Second
 
+// publishTimeout bounds the wait for the broker's ack; without it a wedged
+// connection would block the delivery loop indefinitely.
+const publishTimeout = 5 * time.Second
+
 type event struct {
 	payload  string
 	received time.Time
@@ -41,6 +45,11 @@ func New(cfg *config.Mqtt) *Client {
 	opts.SetConnectRetryInterval(5 * time.Second)
 	// The default reconnect ceiling of 10 minutes is far too slow for a doorbell.
 	opts.SetMaxReconnectInterval(30 * time.Second)
+	// Likewise the default 30s keepalive: until a missed ping is noticed,
+	// IsConnectionOpen still reports true and publishes vanish into the dead
+	// socket, so shrink that window.
+	opts.SetKeepAlive(10 * time.Second)
+	opts.SetPingTimeout(5 * time.Second)
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 	// AddBroker silently drops URLs it cannot parse. With no valid broker the
@@ -112,11 +121,18 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 		log.Warn().Msg("Dropping stale doorbell event")
 		return
 	}
-	if token := c.client.Publish(c.cfg.Topic, 0, false, ev.payload); token.Wait() && token.Error() != nil {
-		log.Error().Err(token.Error()).Msg("Failed to publish message to MQTT broker")
+	// QoS 1: the broker acks the publish, so a half-open connection surfaces
+	// as an error here instead of a silent drop.
+	token := c.client.Publish(c.cfg.Topic, 1, false, ev.payload)
+	if !token.WaitTimeout(publishTimeout) {
+		log.Error().Dur("timeout_ms", publishTimeout).Msg("Broker did not ack publish in time; dropping event")
 		return
 	}
-	log.Info().Msg("Message published from queue")
+	if err := token.Error(); err != nil {
+		log.Error().Err(err).Msg("Failed to publish message to MQTT broker")
+		return
+	}
+	log.Info().Dur("latency_ms", time.Since(ev.received)).Msg("Message published from queue")
 }
 
 func (c *Client) Disconnect() {

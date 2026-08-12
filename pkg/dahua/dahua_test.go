@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"dahua_companion/pkg/config"
 
@@ -158,6 +159,75 @@ func TestListenNonOKStatus(t *testing.T) {
 	}
 	if c.IsConnected() {
 		t.Error("IsConnected() = true after a failed connection")
+	}
+}
+
+func TestListenIdleStreamTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=myboundary")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // go silent without closing, like a dead connection
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	c.idleTimeout = 100 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no data from camera") {
+			t.Errorf("listen() = %v, want idle-timeout error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("listen did not abort a silent stream")
+	}
+}
+
+func TestListenHeartbeatsHoldOffWatchdog(t *testing.T) {
+	// Heartbeats arrive at a fraction of the idle timeout: the stream must
+	// outlive several timeout periods and end cleanly, not by watchdog.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=myboundary")
+		for i := 0; i < 12; i++ {
+			fmt.Fprint(w, "Heartbeat\r\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	c.idleTimeout = 300 * time.Millisecond
+	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+	if err == nil || strings.Contains(err.Error(), "no data from camera") {
+		t.Errorf("listen() = %v, want clean stream end without a watchdog trip", err)
+	}
+}
+
+func TestListenUnresponsiveConnectIsBounded(t *testing.T) {
+	// The camera accepts the TCP connection but never answers the request; the
+	// watchdog must bound this phase too, since the client has no timeout.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	c.idleTimeout = 100 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no data from camera") {
+			t.Errorf("listen() = %v, want idle-timeout error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("listen did not abort an unresponsive connection")
 	}
 }
 

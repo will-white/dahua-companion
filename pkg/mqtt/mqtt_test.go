@@ -18,10 +18,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-type fakeToken struct{ err error }
+type fakeToken struct {
+	err      error
+	timedOut bool
+}
 
 func (t *fakeToken) Wait() bool                     { return true }
-func (t *fakeToken) WaitTimeout(time.Duration) bool { return true }
+func (t *fakeToken) WaitTimeout(time.Duration) bool { return !t.timedOut }
 func (t *fakeToken) Done() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)
@@ -35,12 +38,15 @@ type fakePaho struct {
 	mqtt.Client
 	connected atomic.Bool
 	published []string
+	qos       []byte
+	token     fakeToken
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.connected.Load() }
 func (f *fakePaho) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
 	f.published = append(f.published, payload.(string))
-	return &fakeToken{}
+	f.qos = append(f.qos, qos)
+	return &f.token
 }
 
 func newTestClient(connected bool) (*Client, *fakePaho) {
@@ -69,6 +75,18 @@ func TestDeliverPublishesFreshEvent(t *testing.T) {
 	c.deliver(context.Background(), event{payload: "", received: time.Now()})
 	if len(f.published) != 1 {
 		t.Errorf("published %d messages, want 1", len(f.published))
+	}
+	if len(f.qos) != 1 || f.qos[0] != 1 {
+		t.Errorf("published with qos %v, want [1] so the broker acks delivery", f.qos)
+	}
+}
+
+func TestDeliverGivesUpOnUnackedPublish(t *testing.T) {
+	c, f := newTestClient(true)
+	f.token.timedOut = true
+	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	if len(f.published) != 1 {
+		t.Errorf("publish attempts = %d, want exactly 1 (no retry loop)", len(f.published))
 	}
 }
 
