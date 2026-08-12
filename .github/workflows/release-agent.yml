@@ -26,6 +26,10 @@ jobs:
           echo "issue_number=$EXISTING_ISSUE" >> $GITHUB_OUTPUT
 
       - name: Run Release Agent
+        env:
+          # A manual dispatch means "I want a proposal now": bypass the
+          # chore-accumulation wait (the shipped-path gate still applies).
+          FORCE_PROPOSAL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           chmod +x scripts/release-agent.sh
           ./scripts/release-agent.sh
@@ -39,6 +43,13 @@ jobs:
           PROPOSED_TAG=$(grep 'Proposed Tag' release_proposal.md | cut -d' ' -f3)
           
           if [ -n "$ISSUE_NUMBER" ]; then
+            # Re-editing an identical proposal just generates notification
+            # noise: leave the issue untouched unless the content changed.
+            CURRENT_BODY=$(gh issue view "$ISSUE_NUMBER" --json body --jq .body)
+            if [ "$CURRENT_BODY" = "$(cat release_proposal.md)" ]; then
+              echo "Proposal unchanged; leaving issue #$ISSUE_NUMBER untouched"
+              exit 0
+            fi
             echo "Updating existing issue #$ISSUE_NUMBER"
             gh issue edit "$ISSUE_NUMBER" \
               --title "Release Proposal: $PROPOSED_TAG" \

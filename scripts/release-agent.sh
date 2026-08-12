@@ -28,18 +28,33 @@ if [ "$LATEST_TAG" != "v0.0.0" ]; then
     RANGE=("$LATEST_TAG..HEAD")
 fi
 
-# --oneline is for the human-readable changes list only. Bump detection uses
-# --format=%s / %B: the abbreviated hash prefixing every --oneline line means
-# a subject pattern like ^feat can never match there, and body footers do not
-# appear in --oneline output at all.
-COMMITS=$(git log "${RANGE[@]}" --oneline)
-SUBJECTS=$(git log "${RANGE[@]}" --format=%s)
-BODIES=$(git log "${RANGE[@]}" --format=%B)
-
-if [ -z "$COMMITS" ]; then
+if [ -z "$(git log "${RANGE[@]}" --oneline)" ]; then
     echo "No changes since $LATEST_TAG"
     exit 0
 fi
+
+# Only artifact-affecting changes warrant a release: gate on the paths that
+# reach the shipped image. CI, docs, and devcontainer churn stays silent.
+# (Skipped before the first tag - everything counts for the first release.)
+SHIPPED_PATHS=(main.go pkg go.mod go.sum Dockerfile .dockerignore)
+FILTER=()
+if [ "$LATEST_TAG" != "v0.0.0" ]; then
+    if [ -z "$(git diff --name-only "$LATEST_TAG..HEAD" -- "${SHIPPED_PATHS[@]}")" ]; then
+        echo "No shipped-artifact changes since $LATEST_TAG; skipping proposal"
+        exit 0
+    fi
+    FILTER=(-- "${SHIPPED_PATHS[@]}")
+fi
+
+# The version and changelog describe the shipped artifact, so bump detection
+# and the changes list only look at commits touching SHIPPED_PATHS - a
+# CI-only feat must not inflate the bump. --oneline is for the human-readable
+# list only; bump detection uses --format=%s / %B, since the abbreviated hash
+# prefixing every --oneline line means a subject pattern like ^feat can never
+# match there, and body footers do not appear in --oneline output at all.
+COMMITS=$(git log "${RANGE[@]}" --oneline "${FILTER[@]}")
+SUBJECTS=$(git log "${RANGE[@]}" --format=%s "${FILTER[@]}")
+BODIES=$(git log "${RANGE[@]}" --format=%B "${FILTER[@]}")
 
 # Determine bump type per Conventional Commits: a ! after the type/scope or a
 # breaking-change footer is major, feat is minor, everything else is patch.
@@ -51,6 +66,22 @@ elif grep -qE '^feat(\([^)]*\))?:' <<< "$SUBJECTS"; then
 fi
 
 echo "Detected bump type: $BUMP"
+
+# Accumulation threshold: feat/fix/breaking changes propose immediately, but
+# chore-only shipped changes (e.g. a lone dependency bump) sit until the
+# oldest is CHORE_MAX_AGE_DAYS old, so they batch up instead of proposing a
+# release every week. A manual workflow dispatch sets FORCE_PROPOSAL=true and
+# bypasses the wait - the escape hatch for shipping a dependency fix now.
+CHORE_MAX_AGE_DAYS=21
+if [ "${FORCE_PROPOSAL:-false}" != "true" ] && [ "$LATEST_TAG" != "v0.0.0" ] && [ "$BUMP" != "major" ] \
+    && ! grep -qE '^(feat|fix)(\([^)]*\))?!?:' <<< "$SUBJECTS"; then
+    OLDEST_TS=$(git log "${RANGE[@]}" --format=%ct -- "${SHIPPED_PATHS[@]}" | tail -1)
+    AGE_DAYS=$(( ( $(date +%s) - OLDEST_TS ) / 86400 ))
+    if [ "$AGE_DAYS" -lt "$CHORE_MAX_AGE_DAYS" ]; then
+        echo "Only chore-level shipped changes (oldest ${AGE_DAYS}d < ${CHORE_MAX_AGE_DAYS}d); accumulating"
+        exit 0
+    fi
+fi
 
 # Calculate new version
 read -r MAJOR MINOR PATCH <<< "$(parse_version "$LATEST_TAG")"
