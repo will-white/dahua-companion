@@ -130,7 +130,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # ignore-error: a cache write is an optimization; the GHA cache
+          # service rejecting it ("failed to reserve cache") must not fail a
+          # release build. It killed the v0.2.0 publish twice on 2026-08-12.
+          cache-to: type=gha,mode=max,ignore-error=true
           # SLSA build provenance and an SBOM, attached to the image index as
           # attestation manifests (in addition to the cosign signature below).
           provenance: mode=max
