@@ -18,7 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Issue title and body are untrusted input (they carry commit text) and
       # must reach the shell via env, never by templating them into the script.
