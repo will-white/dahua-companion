@@ -27,6 +27,11 @@ jobs:
       - name: Check Go version sync
         run: ./scripts/check-go-version.sh
 
+      # Release machinery is code too: exercises every gate branch of
+      # release-agent.sh in scratch git repos. Needs no toolchain either.
+      - name: Release agent script tests
+        run: bash scripts/release-agent-test.sh
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
