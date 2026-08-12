@@ -18,6 +18,8 @@ This project also has wrappers around the HTTP subscription and MQTT broker to a
 
 Availability is published retained on `doorbell/availability` (`online`/`offline`): it goes `offline` when the camera stream drops and an MQTT Last Will covers the process dying outright, so your automation can tell you the doorbell is *down* instead of just going quiet. Point your Home Assistant entity/trigger availability at that topic.
 
+Set `MQTT_DISCOVERY_PREFIX=homeassistant` and the doorbell announces itself via [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery): Home Assistant auto-creates a device with a doorbell **Event entity**, press and availability already wired — no YAML needed.
+
 A `/health` endpoint (port `8080` by default) returns 200 only when the MQTT connection is up, the event stream is attached, and the camera answers a live read-only probe.
 
 ## Running it
@@ -48,12 +50,15 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | yes | MQTT credentials |
 | `MQTT_TOPIC` | no | defaults to `doorbell/pressed` |
 | `MQTT_AVAILABILITY_TOPIC` | no | retained `online`/`offline` state, defaults to `doorbell/availability` |
+| `MQTT_DISCOVERY_PREFIX` | no | set to `homeassistant` to enable HA MQTT discovery; empty (default) disables it |
 | `HOSTNAME_OR_IP` | yes | camera hostname or IP |
 | `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |
 | `APP_ENV` | no | `development` switches to human-readable console logs |
 
 ## Home Assistant Example
+
+With discovery enabled (see above) none of this is needed — the device appears on its own. Without it, a plain MQTT trigger works:
 
 ```
 alias: Doorbell buzzer

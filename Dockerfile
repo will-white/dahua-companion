@@ -36,7 +36,8 @@ WORKDIR /app
 # Copy the Pre-built binary file from the previous stage
 COPY --from=builder /app/main .
 
-# Expose port 8080 to the outside world
+# Documents the default /health port; EXPOSE is informational only, and
+# HEALTH_PORT at runtime changes the actual listen port.
 EXPOSE 8080
 
 # scratch has no shell or curl, so the binary probes its own /health endpoint
