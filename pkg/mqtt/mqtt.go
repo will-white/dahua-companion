@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"dahua_companion/pkg/config"
@@ -31,9 +32,15 @@ type Client struct {
 	client mqtt.Client
 	cfg    *config.Mqtt
 	queue  chan event
+
+	// availabilityMu serializes availability publishes so the retained value
+	// on the broker always converges to the latest state.
+	availabilityMu sync.Mutex
+	available      bool
 }
 
 func New(cfg *config.Mqtt) *Client {
+	c := &Client{cfg: cfg, queue: make(chan event, 100)}
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(cfg.Broker)
 	opts.SetClientID(cfg.ClientID)
@@ -50,7 +57,16 @@ func New(cfg *config.Mqtt) *Client {
 	// socket, so shrink that window.
 	opts.SetKeepAlive(10 * time.Second)
 	opts.SetPingTimeout(5 * time.Second)
-	opts.OnConnect = connectHandler
+	// If the process dies without a clean disconnect, the broker announces it:
+	// consumers can alert on the doorbell being down instead of missing
+	// presses silently.
+	opts.SetWill(cfg.AvailabilityTopic, "offline", 1, true)
+	opts.OnConnect = func(mqtt.Client) {
+		log.Info().Msg("Connected to MQTT broker")
+		// Re-announce the current state after every (re)connect; until the
+		// event stream reports in, that is "offline".
+		c.republishAvailability()
+	}
 	opts.OnConnectionLost = connectLostHandler
 	// AddBroker silently drops URLs it cannot parse. With no valid broker the
 	// connect token errors immediately and is never retried, which would leave
@@ -59,8 +75,8 @@ func New(cfg *config.Mqtt) *Client {
 	if len(opts.Servers) == 0 {
 		log.Fatal().Str("broker", cfg.Broker).Msg("No valid MQTT broker URL configured")
 	}
-	client := mqtt.NewClient(opts)
-	token := client.Connect()
+	c.client = mqtt.NewClient(opts)
+	token := c.client.Connect()
 	go func() {
 		// With ConnectRetry, network failures retry forever; an error here is
 		// a terminal one (e.g. Disconnect during the initial retry loop), so
@@ -69,7 +85,45 @@ func New(cfg *config.Mqtt) *Client {
 			log.Error().Err(token.Error()).Msg("MQTT connect ended without a connection")
 		}
 	}()
-	return &Client{client: client, cfg: cfg, queue: make(chan event, 100)}
+	return c
+}
+
+// PublishAvailability records and announces whether the doorbell event stream
+// is live, retained on the availability topic so consumers (e.g. Home
+// Assistant) can mark the doorbell unavailable instead of missing presses
+// silently. The last will covers the process dying outright.
+func (c *Client) PublishAvailability(online bool) {
+	c.availabilityMu.Lock()
+	defer c.availabilityMu.Unlock()
+	c.available = online
+	c.publishAvailabilityLocked()
+}
+
+// republishAvailability re-announces the last recorded state, e.g. after a
+// broker reconnect during which the will may have retained "offline".
+func (c *Client) republishAvailability() {
+	c.availabilityMu.Lock()
+	defer c.availabilityMu.Unlock()
+	c.publishAvailabilityLocked()
+}
+
+func (c *Client) publishAvailabilityLocked() {
+	payload := "offline"
+	if c.available {
+		payload = "online"
+	}
+	// The ack wait happens off the lock path; delivery order is still the
+	// call order, which the lock serializes.
+	token := c.client.Publish(c.cfg.AvailabilityTopic, 1, true, payload)
+	go func() {
+		if !token.WaitTimeout(publishTimeout) {
+			log.Error().Str("state", payload).Msg("Broker did not ack availability publish in time")
+			return
+		}
+		if err := token.Error(); err != nil {
+			log.Error().Err(err).Str("state", payload).Msg("Failed to publish availability")
+		}
+	}()
 }
 
 // IsConnected reports whether the client currently has an open broker connection.
@@ -136,11 +190,10 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 }
 
 func (c *Client) Disconnect() {
+	// A clean disconnect suppresses the will, so leave "offline" explicitly;
+	// Disconnect's grace period lets it flush.
+	c.PublishAvailability(false)
 	c.client.Disconnect(250)
-}
-
-func connectHandler(client mqtt.Client) {
-	log.Info().Msg("Connected to MQTT broker")
 }
 
 func connectLostHandler(client mqtt.Client, err error) {

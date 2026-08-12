@@ -32,6 +32,8 @@ func main() {
 
 	mqttClient := mqtt.New(&cfg.Mqtt)
 	dahuaClient := dahua.New(&cfg.Dahua)
+	// Availability mirrors the event stream: no stream, no doorbell.
+	dahuaClient.OnConnectionChange = mqttClient.PublishAvailability
 	healthServer := health.New(":"+cfg.HealthPort, mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
 	healthServer.Start()
 

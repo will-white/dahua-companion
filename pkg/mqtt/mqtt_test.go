@@ -32,20 +32,25 @@ func (t *fakeToken) Done() <-chan struct{} {
 }
 func (t *fakeToken) Error() error { return t.err }
 
+type pub struct {
+	topic    string
+	qos      byte
+	retained bool
+	payload  string
+}
+
 // fakePaho implements the parts of mqtt.Client that Client uses; the embedded
 // interface panics on anything else.
 type fakePaho struct {
 	mqtt.Client
 	connected atomic.Bool
-	published []string
-	qos       []byte
+	published []pub
 	token     fakeToken
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.connected.Load() }
 func (f *fakePaho) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
-	f.published = append(f.published, payload.(string))
-	f.qos = append(f.qos, qos)
+	f.published = append(f.published, pub{topic: topic, qos: qos, retained: retained, payload: payload.(string)})
 	return &f.token
 }
 
@@ -54,7 +59,7 @@ func newTestClient(connected bool) (*Client, *fakePaho) {
 	f.connected.Store(connected)
 	c := &Client{
 		client: f,
-		cfg:    &config.Mqtt{Topic: "doorbell/pressed"},
+		cfg:    &config.Mqtt{Topic: "doorbell/pressed", AvailabilityTopic: "doorbell/availability"},
 		queue:  make(chan event, 100),
 	}
 	return c, f
@@ -76,8 +81,32 @@ func TestDeliverPublishesFreshEvent(t *testing.T) {
 	if len(f.published) != 1 {
 		t.Errorf("published %d messages, want 1", len(f.published))
 	}
-	if len(f.qos) != 1 || f.qos[0] != 1 {
-		t.Errorf("published with qos %v, want [1] so the broker acks delivery", f.qos)
+	if p := f.published[0]; p.qos != 1 {
+		t.Errorf("published with qos %d, want 1 so the broker acks delivery", p.qos)
+	}
+}
+
+func TestPublishAvailabilityRetainsState(t *testing.T) {
+	c, f := newTestClient(true)
+	c.PublishAvailability(true)
+	c.PublishAvailability(false)
+	if len(f.published) != 2 {
+		t.Fatalf("published %d messages, want 2", len(f.published))
+	}
+	for i, want := range []string{"online", "offline"} {
+		p := f.published[i]
+		if p.topic != "doorbell/availability" || p.payload != want || !p.retained || p.qos != 1 {
+			t.Errorf("publish %d = %+v, want retained qos-1 %q on doorbell/availability", i, p, want)
+		}
+	}
+}
+
+func TestRepublishAvailabilityAnnouncesLastState(t *testing.T) {
+	c, f := newTestClient(true)
+	c.PublishAvailability(true)
+	c.republishAvailability() // what OnConnect runs after a broker reconnect
+	if len(f.published) != 2 || f.published[1].payload != "online" {
+		t.Fatalf("published = %+v, want the reconnect to re-announce online", f.published)
 	}
 }
 
