@@ -14,9 +14,28 @@ For this project we're only concerned with the `AlarmLocal` event (This is the b
 
 After we receive an event we publish a `doorbell/pressed` to the MQTT broker.
 
-This project also has wrappers around the HTTP subscription and MQTT broker to always make sure it's connected. Events are buffered briefly while the broker reconnects, but anything older than 30 seconds is dropped instead of delivered late — a doorbell press only matters while someone might still be at the door.
+This project also has wrappers around the HTTP subscription and MQTT broker to always make sure it's connected: the camera stream runs under a heartbeat watchdog so a dead connection is rebuilt within seconds, and publishes are acknowledged by the broker. Events are buffered briefly while the broker reconnects, but anything older than 30 seconds is dropped instead of delivered late — a doorbell press only matters while someone might still be at the door.
+
+Availability is published retained on `doorbell/availability` (`online`/`offline`): it goes `offline` when the camera stream drops and an MQTT Last Will covers the process dying outright, so your automation can tell you the doorbell is *down* instead of just going quiet. Point your Home Assistant entity/trigger availability at that topic.
 
 A `/health` endpoint (port `8080` by default) returns 200 only when the MQTT connection is up, the event stream is attached, and the camera answers a live read-only probe.
+
+## Running it
+
+Multi-arch images (amd64/arm64) are published to `ghcr.io/will-white/dahua-companion`, tagged `vX.Y.Z` and `latest`, cosign-signed with SLSA provenance and SBOM attestations.
+
+```yaml
+# docker-compose.yml
+services:
+  dahua-companion:
+    image: ghcr.io/will-white/dahua-companion:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080" # /health, optional
+```
+
+The image ships a `HEALTHCHECK` that probes `/health`. Note Docker only *marks* the container unhealthy — plain `docker run`/compose never restarts it for that. In-process reconnection already recovers from camera and broker outages on its own; if you also want automatic restarts on a wedged process, pair the healthcheck with [autoheal](https://github.com/willfarrell/docker-autoheal) or an orchestrator that acts on health status.
 
 ## Configuration
 
@@ -28,6 +47,7 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `MQTT_CLIENT_ID` | yes | MQTT client id |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | yes | MQTT credentials |
 | `MQTT_TOPIC` | no | defaults to `doorbell/pressed` |
+| `MQTT_AVAILABILITY_TOPIC` | no | retained `online`/`offline` state, defaults to `doorbell/availability` |
 | `HOSTNAME_OR_IP` | yes | camera hostname or IP |
 | `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |

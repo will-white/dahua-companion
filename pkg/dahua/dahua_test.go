@@ -123,6 +123,8 @@ func TestListenStream(t *testing.T) {
 	defer srv.Close()
 
 	c := testClient(srv.URL)
+	var transitions []bool
+	c.OnConnectionChange = func(up bool) { transitions = append(transitions, up) }
 	events := 0
 	connectedDuringEvent := false
 	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {
@@ -141,6 +143,9 @@ func TestListenStream(t *testing.T) {
 	}
 	if c.IsConnected() {
 		t.Error("IsConnected() = true after the stream ended")
+	}
+	if len(transitions) != 2 || !transitions[0] || transitions[1] {
+		t.Errorf("connection transitions = %v, want [true false]", transitions)
 	}
 }
 

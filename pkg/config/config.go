@@ -9,11 +9,12 @@ import (
 )
 
 type Mqtt struct {
-	Broker   string `envconfig:"MQTT_BROKER_URL" required:"true"`
-	ClientID string `envconfig:"MQTT_CLIENT_ID" required:"true"`
-	Username string `envconfig:"MQTT_USERNAME" required:"true"`
-	Password string `envconfig:"MQTT_PASSWORD" required:"true"`
-	Topic    string `envconfig:"MQTT_TOPIC" default:"doorbell/pressed"`
+	Broker            string `envconfig:"MQTT_BROKER_URL" required:"true"`
+	ClientID          string `envconfig:"MQTT_CLIENT_ID" required:"true"`
+	Username          string `envconfig:"MQTT_USERNAME" required:"true"`
+	Password          string `envconfig:"MQTT_PASSWORD" required:"true"`
+	Topic             string `envconfig:"MQTT_TOPIC" default:"doorbell/pressed"`
+	AvailabilityTopic string `envconfig:"MQTT_AVAILABILITY_TOPIC" default:"doorbell/availability"`
 }
 
 // The camera credentials are prefixed DAHUA_ on purpose: bare USERNAME and

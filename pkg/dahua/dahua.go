@@ -28,6 +28,9 @@ const streamIdleTimeout = 3 * heartbeatSeconds * time.Second
 type Client struct {
 	HttpClient *http.Client
 	Cfg        *config.Dahua
+	// OnConnectionChange, when set before Listen starts, is called from the
+	// listen goroutine on every event stream connect and disconnect.
+	OnConnectionChange func(connected bool)
 	// idleTimeout tears the event stream down when the camera has been silent
 	// for this long; heartbeats keep a healthy stream well under it.
 	idleTimeout time.Duration
@@ -117,8 +120,8 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	}
 
 	log.Info().Msg("Connected to HTTP stream and listening for events")
-	c.connected.Store(true)
-	defer c.connected.Store(false)
+	c.setConnected(true)
+	defer c.setConnected(false)
 	// The camera is reachable again: only consecutive failures should grow the
 	// retry delay, so start the next reconnect from the shortest interval.
 	bo.Reset()
@@ -134,6 +137,14 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 		return c.streamErr(ctx, streamCtx, err, "Error reading the stream")
 	}
 	return fmt.Errorf("event stream ended")
+}
+
+// setConnected updates the stream state and notifies OnConnectionChange.
+func (c *Client) setConnected(up bool) {
+	c.connected.Store(up)
+	if c.OnConnectionChange != nil {
+		c.OnConnectionChange(up)
+	}
 }
 
 // streamErr logs and returns err, naming the idle watchdog when it is what
