@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -58,9 +59,10 @@ func newTestClient(connected bool) (*Client, *fakePaho) {
 	f := &fakePaho{}
 	f.connected.Store(connected)
 	c := &Client{
-		client: f,
-		cfg:    &config.Mqtt{Topic: "doorbell/pressed", AvailabilityTopic: "doorbell/availability"},
-		queue:  make(chan event, 100),
+		client:      f,
+		cfg:         &config.Mqtt{Topic: "doorbell/pressed", AvailabilityTopic: "doorbell/availability"},
+		queue:       make(chan event, 100),
+		reconnected: make(chan struct{}, 1),
 	}
 	return c, f
 }
@@ -98,6 +100,81 @@ func TestPublishAvailabilityRetainsState(t *testing.T) {
 		if p.topic != "doorbell/availability" || p.payload != want || !p.retained || p.qos != 1 {
 			t.Errorf("publish %d = %+v, want retained qos-1 %q on doorbell/availability", i, p, want)
 		}
+	}
+}
+
+func TestPublishDiscovery(t *testing.T) {
+	c, f := newTestClient(true)
+	c.cfg.ClientID = "dahua companion!" // exercises topic-id sanitization
+	c.cfg.DiscoveryPrefix = "homeassistant"
+	c.publishDiscovery()
+	if len(f.published) != 1 {
+		t.Fatalf("published %d messages, want 1", len(f.published))
+	}
+	p := f.published[0]
+	if p.topic != "homeassistant/event/dahua_companion_/doorbell/config" || !p.retained || p.qos != 1 {
+		t.Errorf("discovery publish = %+v, want retained qos-1 config under the prefix", p)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(p.payload), &cfg); err != nil {
+		t.Fatalf("discovery payload is not JSON: %v", err)
+	}
+	if cfg["state_topic"] != "doorbell/pressed" || cfg["availability_topic"] != "doorbell/availability" || cfg["device_class"] != "doorbell" {
+		t.Errorf("discovery config = %v, want press and availability topics wired", cfg)
+	}
+}
+
+func TestPublishDiscoveryDisabledByDefault(t *testing.T) {
+	c, f := newTestClient(true)
+	c.publishDiscovery()
+	if len(f.published) != 0 {
+		t.Errorf("published %d messages, want 0 with no discovery prefix", len(f.published))
+	}
+}
+
+func TestProcessQueueDrainsQueuedEventAtShutdown(t *testing.T) {
+	c, f := newTestClient(true)
+	c.Publish("")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.ProcessQueue(ctx)
+	if len(f.published) != 1 {
+		t.Errorf("published %d messages, want the queued event flushed", len(f.published))
+	}
+}
+
+func TestDrainDropsWhenBrokerUnreachable(t *testing.T) {
+	c, f := newTestClient(false)
+	c.Publish("")
+	done := make(chan struct{})
+	go func() {
+		c.drain()
+		close(done)
+	}()
+	select {
+	case <-done: // drain must not wait for a reconnect
+	case <-time.After(time.Second):
+		t.Fatal("drain blocked; it must drop events while the broker is down")
+	}
+	if len(f.published) != 0 {
+		t.Errorf("published %d messages, want 0", len(f.published))
+	}
+}
+
+func TestDeliverWakesOnReconnect(t *testing.T) {
+	c, f := newTestClient(false)
+	start := time.Now()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		f.connected.Store(true)
+		c.reconnected <- struct{}{}
+	}()
+	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	if len(f.published) != 1 {
+		t.Fatalf("published %d messages, want 1", len(f.published))
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("deliver took %v, want a prompt wake instead of the poll tick", elapsed)
 	}
 }
 
