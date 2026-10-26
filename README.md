@@ -68,6 +68,9 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `MQTT_HUMAN_TOPIC` | no | human detection events, defaults to `doorbell/human`; set to empty to disable human detection |
 | `MQTT_DISCOVERY_PREFIX` | no | set to `homeassistant` to enable HA MQTT discovery; empty (default) disables it |
 | `HOSTNAME_OR_IP` | yes | camera hostname or IP |
+| `DAHUA_SCHEME` | no | `http` (default) or `https` for the camera API |
+| `DAHUA_CA_FILE` | no | with `https`: PEM file to verify the camera's certificate against (export the camera's self-signed certificate) instead of the system roots |
+| `DAHUA_TLS_INSECURE` | no | with `https`: `true` skips certificate verification — still encrypted, but not protected against impersonation on your network |
 | `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
 | `*_FILE` | no | `MQTT_USERNAME_FILE`, `MQTT_PASSWORD_FILE`, `DAHUA_USERNAME_FILE`, `DAHUA_PASSWORD_FILE`: read the value from a file instead, e.g. a Docker secret under `/run/secrets/` (a trailing newline is ignored; the plain variable wins if both are set) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |

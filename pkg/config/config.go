@@ -17,6 +17,12 @@ const (
 	PayloadJSON  = "json"
 )
 
+// Camera API schemes for DAHUA_SCHEME.
+const (
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
+)
+
 // Events that SNAPSHOT can name.
 const (
 	SnapshotPress = "press"
@@ -65,6 +71,13 @@ type Dahua struct {
 	Username string `envconfig:"DAHUA_USERNAME"`
 	Password string `envconfig:"DAHUA_PASSWORD"`
 	Host     string `envconfig:"HOSTNAME_OR_IP" required:"true"`
+	// Scheme is SchemeHTTP (default) or SchemeHTTPS for the camera API.
+	Scheme string `envconfig:"DAHUA_SCHEME" default:"http"`
+	// CAFile, with https, is a PEM bundle to verify the camera against
+	// instead of the system roots - typically its self-signed certificate.
+	CAFile string `envconfig:"DAHUA_CA_FILE"`
+	// TLSInsecure, with https, skips certificate verification entirely.
+	TLSInsecure bool `envconfig:"DAHUA_TLS_INSECURE"`
 	// HumanCooldown suppresses human detections that follow a published one
 	// within this window; 0 publishes every detection.
 	HumanCooldown time.Duration `envconfig:"HUMAN_COOLDOWN" default:"10s"`
@@ -133,6 +146,15 @@ func Load() *Config {
 	}
 	if c.Mqtt.PayloadFormat != PayloadEmpty && c.Mqtt.PayloadFormat != PayloadJSON {
 		log.Fatal().Str("format", c.Mqtt.PayloadFormat).Msg("MQTT_PAYLOAD_FORMAT must be empty or json")
+	}
+	if c.Dahua.Scheme != SchemeHTTP && c.Dahua.Scheme != SchemeHTTPS {
+		log.Fatal().Str("scheme", c.Dahua.Scheme).Msg("DAHUA_SCHEME must be http or https")
+	}
+	if c.Dahua.Scheme == SchemeHTTP && (c.Dahua.CAFile != "" || c.Dahua.TLSInsecure) {
+		log.Warn().Msg("DAHUA_CA_FILE / DAHUA_TLS_INSECURE have no effect unless DAHUA_SCHEME=https")
+	}
+	if c.Dahua.TLSInsecure && c.Dahua.CAFile != "" {
+		log.Warn().Msg("DAHUA_TLS_INSECURE skips verification, so DAHUA_CA_FILE is ignored")
 	}
 	for i, event := range c.Mqtt.Snapshot {
 		event = strings.TrimSpace(event)
