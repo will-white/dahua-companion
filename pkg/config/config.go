@@ -17,6 +17,12 @@ const (
 	PayloadJSON  = "json"
 )
 
+// Snapshot sources for SNAPSHOT_SOURCE.
+const (
+	SnapshotFromRequest = "request"
+	SnapshotFromEvent   = "event"
+)
+
 // Camera API schemes for DAHUA_SCHEME.
 const (
 	SchemeHTTP  = "http"
@@ -46,6 +52,10 @@ type Mqtt struct {
 	// Snapshot lists the events (SnapshotPress, SnapshotHuman) that also
 	// publish a camera still to "<event topic>/snapshot"; empty disables.
 	Snapshot []string `envconfig:"SNAPSHOT"`
+	// SnapshotSource is SnapshotFromRequest (fetch snapshot.cgi right after
+	// the event; works on any camera) or SnapshotFromEvent (the camera's
+	// event-snapshot stream, captured at the moment of the event).
+	SnapshotSource string `envconfig:"SNAPSHOT_SOURCE" default:"request"`
 	// DiscoveryPrefix enables Home Assistant MQTT discovery when set (HA's
 	// default prefix is "homeassistant"); empty disables it.
 	DiscoveryPrefix string `envconfig:"MQTT_DISCOVERY_PREFIX"`
@@ -146,6 +156,9 @@ func Load() *Config {
 	}
 	if c.Mqtt.PayloadFormat != PayloadEmpty && c.Mqtt.PayloadFormat != PayloadJSON {
 		log.Fatal().Str("format", c.Mqtt.PayloadFormat).Msg("MQTT_PAYLOAD_FORMAT must be empty or json")
+	}
+	if c.Mqtt.SnapshotSource != SnapshotFromRequest && c.Mqtt.SnapshotSource != SnapshotFromEvent {
+		log.Fatal().Str("source", c.Mqtt.SnapshotSource).Msg("SNAPSHOT_SOURCE must be request or event")
 	}
 	if c.Dahua.Scheme != SchemeHTTP && c.Dahua.Scheme != SchemeHTTPS {
 		log.Fatal().Str("scheme", c.Dahua.Scheme).Msg("DAHUA_SCHEME must be http or https")

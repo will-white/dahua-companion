@@ -54,6 +54,10 @@ func main() {
 	// longer than delivering, so the image lands after the event it belongs to.
 	snapshots := snapshot.New(ctx, dahuaClient.Snapshot, mqttClient.PublishSnapshot)
 
+	// With SNAPSHOT_SOURCE=event the camera pushes its own stills on a second
+	// stream instead; otherwise they are fetched after each event.
+	fetchSnapshots := cfg.Mqtt.SnapshotSource == config.SnapshotFromRequest
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -62,12 +66,12 @@ func main() {
 			switch ev.Kind {
 			case dahua.DoorbellPressed:
 				mqttClient.PublishPress(ev.Channel)
-				if cfg.Mqtt.SnapshotEnabled(config.SnapshotPress) {
+				if fetchSnapshots && cfg.Mqtt.SnapshotEnabled(config.SnapshotPress) {
 					snapshots.Request(cfg.Mqtt.PressSnapshotTopic(), ev.Channel, true)
 				}
 			case dahua.HumanDetected:
 				mqttClient.PublishHuman(ev.Channel)
-				if cfg.Mqtt.SnapshotEnabled(config.SnapshotHuman) {
+				if fetchSnapshots && cfg.Mqtt.SnapshotEnabled(config.SnapshotHuman) {
 					snapshots.Request(cfg.Mqtt.HumanSnapshotTopic(), ev.Channel, false)
 				}
 			}
@@ -77,6 +81,19 @@ func main() {
 		defer wg.Done()
 		mqttClient.ProcessQueue(ctx)
 	}()
+	if kinds := snapshotKinds(&cfg.Mqtt); !fetchSnapshots && len(kinds) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dahuaClient.ListenSnapshots(ctx, kinds, func(ev dahua.Event, img []byte) {
+				topic := cfg.Mqtt.PressSnapshotTopic()
+				if ev.Kind == dahua.HumanDetected {
+					topic = cfg.Mqtt.HumanSnapshotTopic()
+				}
+				mqttClient.PublishSnapshot(topic, img)
+			})
+		}()
+	}
 
 	<-ctx.Done()
 	log.Info().Msg("Shutting down...")
@@ -94,6 +111,18 @@ func main() {
 	}
 
 	log.Info().Msg("Shutdown complete")
+}
+
+// snapshotKinds lists the event kinds SNAPSHOT enables.
+func snapshotKinds(cfg *config.Mqtt) []dahua.EventKind {
+	var kinds []dahua.EventKind
+	if cfg.SnapshotEnabled(config.SnapshotPress) {
+		kinds = append(kinds, dahua.DoorbellPressed)
+	}
+	if cfg.SnapshotEnabled(config.SnapshotHuman) {
+		kinds = append(kinds, dahua.HumanDetected)
+	}
+	return kinds
 }
 
 // runHealthcheck probes the local health endpoint. It backs the Docker
