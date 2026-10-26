@@ -95,7 +95,7 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `SNAPSHOT` | no | comma-separated events that also publish a camera still: `press`, `human`, or both; empty (default) disables |
 | `LOG_LEVEL` | no | `info` (default), `debug`, `warn`, … — `debug` logs every camera stream line the app doesn't handle, useful for supporting a new camera model |
 | `APP_ENV` | no | `development` switches to human-readable console logs |
-| `GOMEMLIMIT` | no | standard Go runtime soft memory limit (e.g. `32MiB`) for very small hosts; the app idles at ~10–15 MB |
+| `GOMEMLIMIT` | no | standard Go runtime soft memory limit (e.g. `32MiB`) for very small hosts; the app idles at ~9 MB |
 
 ## Home Assistant Example
 

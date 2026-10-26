@@ -9,7 +9,7 @@ See also `AGENTS.md` for persona/boundary conventions (conventional commits are 
 ```bash
 go build ./...                       # build
 go test ./...                        # all tests
-go test -race -v ./...               # what CI runs
+go test -race -v -tags nethttpomithttp2 ./...   # what CI runs (the Dockerfile's build tag)
 go test ./pkg/dahua -run TestParseEvent   # single test
 go vet ./...                         # static analysis
 go mod tidy -diff                    # CI fails if go.mod/go.sum are untidy
@@ -79,7 +79,7 @@ Images carry SLSA provenance (`mode=max`) and SBOM attestations on the index, an
 
 ## Docker
 
-Multi-stage: a `golang:<ver>-alpine` builder → `scratch`, `CGO_ENABLED=0`, `-trimpath -ldflags="-s -w"`, running as non-root `scratchuser` (only `/etc/passwd` is copied over). The CA bundle is copied from the builder, so an MQTT broker over TLS (`ssl://`) verifies. The `HEALTHCHECK` runs `/app/main -healthcheck` since scratch has no shell.
+Multi-stage: a `golang:<ver>-alpine` builder → `scratch`, `CGO_ENABLED=0`, `-tags nethttpomithttp2 -trimpath -ldflags="-s -w"` (the tag drops net/http's bundled HTTP/2 — ~0.6 MB of binary and a goroutine thread — since the camera, health server and MQTT are all HTTP/1.1; CI builds and tests with the same tag; measured idle footprint ~9 MB RSS, ~0 CPU), running as non-root `scratchuser` (only `/etc/passwd` is copied over). The CA bundle is copied from the builder, so an MQTT broker over TLS (`ssl://`) verifies. The `HEALTHCHECK` runs `/app/main -healthcheck` since scratch has no shell.
 
 **The Go version is declared in three places** and must stay consistent — `toolchain` in `go.mod`, the `golang:<ver>-alpine` builder in `Dockerfile`, and the `devcontainers/go:<major>-<go-minor>-bookworm` image in `.devcontainer/devcontainer.json`. Renovate sees three unrelated dependencies, so `renovate.json` groups them into one "go version" PR (patch releases split off into an auto-merged "go patch" PR, since they are usually the govulncheck fix; `gomodTidy` keeps Renovate's `go.sum` tidy), and `scripts/check-go-version.sh` fails CI if they drift regardless of how the drift happened. Run it directly after touching any of the three:
 

@@ -17,7 +17,9 @@ COPY . .
 # Disables C dependencies for portability.
 ENV CGO_ENABLED=0
 # By using the build flags -s and -w, we remove the symbol table and DWARF debugging information, which shrinks the size of the binary.
-RUN go build -trimpath -ldflags="-s -w" -o main .
+# nethttpomithttp2 drops net/http's bundled HTTP/2 (~0.6 MB, one thread):
+# the camera API, the health server and MQTT all speak HTTP/1.1.
+RUN go build -tags nethttpomithttp2 -trimpath -ldflags="-s -w" -o main .
 
 RUN adduser -D scratchuser
 
