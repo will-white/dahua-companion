@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"dahua_companion/pkg/metrics"
 )
 
 func TestParseSnapshotEvent(t *testing.T) {
@@ -107,6 +109,7 @@ func TestListenSnapshots(t *testing.T) {
 		close(done)
 	}()
 
+	connectsBefore := metrics.SnapshotStreamConnects.Value()
 	want := []got{{Event{Kind: DoorbellPressed}, "press-jpeg"}, {Event{Kind: HumanDetected}, "human-jpeg"}}
 	for _, w := range want {
 		select {
@@ -123,8 +126,17 @@ func TestListenSnapshots(t *testing.T) {
 		t.Errorf("unexpected snapshot %+v (Stop image or cooldown not applied)", g)
 	case <-time.After(100 * time.Millisecond):
 	}
+	if !c.SnapshotStreamConnected() {
+		t.Error("SnapshotStreamConnected() = false while the stream was open")
+	}
+	if metrics.SnapshotStreamConnects.Value() <= connectsBefore {
+		t.Error("snapshot stream connect not counted")
+	}
 	cancel()
 	<-done
+	if c.SnapshotStreamConnected() {
+		t.Error("SnapshotStreamConnected() = true after the stream ended")
+	}
 
 	if !strings.Contains(query, "action=attachFileProc") || !strings.Contains(query, "Events=[AlarmLocal%2CSmartMotionHuman%2CCrossLineDetection%2CCrossRegionDetection]") {
 		t.Errorf("snapshot stream query = %q, want the event codes subscribed", query)

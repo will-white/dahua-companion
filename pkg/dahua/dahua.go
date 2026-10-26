@@ -34,6 +34,9 @@ type Client struct {
 	// for this long; heartbeats keep a healthy stream well under it.
 	idleTimeout time.Duration
 	connected   atomic.Bool
+	// snapshotConnected tracks the event-snapshot stream separately: it is
+	// best effort and never affects IsConnected or availability.
+	snapshotConnected atomic.Bool
 }
 
 // New builds a camera client. It fails only on an unusable TLS setup (an

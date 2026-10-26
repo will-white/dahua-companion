@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"dahua_companion/pkg/metrics"
+
 	"github.com/cenkalti/backoff/v7"
 	"github.com/rs/zerolog/log"
 )
@@ -44,10 +46,20 @@ func (c *Client) ListenSnapshots(ctx context.Context, kinds []EventKind, onSnaps
 		onSnapshot(ev, img)
 	}
 	retryStream(ctx, "snapshot stream", func(bo *backoff.ExponentialBackOff) error {
-		return c.stream(ctx, bo, "snapshot stream", url, false, func(body io.Reader, contentType string) error {
+		err := c.stream(ctx, bo, "snapshot stream", url, false, func(body io.Reader, contentType string) error {
 			return readSnapshotParts(body, contentType, deliver)
 		})
+		if err != nil && ctx.Err() == nil {
+			metrics.SnapshotStreamFailures.Inc()
+		}
+		return err
 	})
+}
+
+// SnapshotStreamConnected reports whether the event-snapshot stream
+// (ListenSnapshots) is currently established.
+func (c *Client) SnapshotStreamConnected() bool {
+	return c.snapshotConnected.Load()
 }
 
 // readSnapshotParts reads the multipart snapshot stream: a text/plain part

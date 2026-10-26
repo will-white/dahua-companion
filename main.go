@@ -82,6 +82,7 @@ func main() {
 		mqttClient.ProcessQueue(ctx)
 	}()
 	if kinds := snapshotKinds(&cfg.Mqtt); !fetchSnapshots && len(kinds) > 0 {
+		metrics.GaugeFunc("dahua_companion_snapshot_stream_up", "1 while the event-snapshot stream is connected.", metrics.BoolGauge(dahuaClient.SnapshotStreamConnected))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
