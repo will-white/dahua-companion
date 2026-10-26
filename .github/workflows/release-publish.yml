@@ -19,6 +19,8 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # the release notes read history back to the previous tag
 
       # Issue title and body are untrusted input (they carry commit text) and
       # must reach the shell via env, never by templating them into the script.
@@ -45,10 +47,19 @@ jobs:
           # line fall back to main.
           TARGET=$(grep -oE '^\*\*Commit:\*\* [0-9a-f]{40}' <<< "$NOTES" | grep -oE '[0-9a-f]{40}' | head -1 || true)
           echo "Releasing $VERSION at ${TARGET:-main}"
+          # Grouped notes for the shipped changes since the previous tag; the
+          # proposal body is only a fallback, since it carries the approval
+          # boilerplate meant for reviewers.
+          REF=${TARGET:-origin/main}
+          PREV=$(git describe --tags --abbrev=0 "$REF^" 2>/dev/null || true)
+          if ! BODY=$(bash scripts/release-notes.sh "$PREV" "$REF" "$VERSION"); then
+            echo "::warning::release-notes.sh failed; using the proposal text"
+            BODY=$NOTES
+          fi
           gh release create "$VERSION" \
             --target "${TARGET:-main}" \
             --title "$VERSION" \
-            --notes "$NOTES"
+            --notes "$BODY"
 
   call-docker-publish:
     needs: publish-release

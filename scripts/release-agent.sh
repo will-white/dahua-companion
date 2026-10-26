@@ -47,12 +47,10 @@ if [ "$LATEST_TAG" != "v0.0.0" ]; then
 fi
 
 # The version and changelog describe the shipped artifact, so bump detection
-# and the changes list only look at commits touching SHIPPED_PATHS - a
-# CI-only feat must not inflate the bump. --oneline is for the human-readable
-# list only; bump detection uses --format=%s / %B, since the abbreviated hash
-# prefixing every --oneline line means a subject pattern like ^feat can never
-# match there, and body footers do not appear in --oneline output at all.
-COMMITS=$(git log "${RANGE[@]}" --oneline "${FILTER[@]}")
+# (and release-notes.sh) only look at commits touching SHIPPED_PATHS - a
+# CI-only feat must not inflate the bump. Detection reads --format=%s / %B:
+# an --oneline hash prefix would defeat a subject pattern like ^feat, and body
+# footers do not appear in --oneline output at all.
 SUBJECTS=$(git log "${RANGE[@]}" --format=%s "${FILTER[@]}")
 BODIES=$(git log "${RANGE[@]}" --format=%B "${FILTER[@]}")
 
@@ -111,6 +109,14 @@ OUTPUT_FILE="release_proposal.md"
 # reviewed against, even if main moves before the approval label lands.
 COMMIT_SHA=$(git rev-parse HEAD)
 
+# The same grouped notes release-publish puts on the GitHub release, so the
+# proposal shows exactly what will ship.
+NOTES_FROM=""
+if [ "$LATEST_TAG" != "v0.0.0" ]; then
+    NOTES_FROM=$LATEST_TAG
+fi
+NOTES=$(bash "$(dirname "${BASH_SOURCE[0]}")/release-notes.sh" "$NOTES_FROM" HEAD)
+
 cat <<EOF > "$OUTPUT_FILE"
 # Release Proposal
 
@@ -121,9 +127,7 @@ cat <<EOF > "$OUTPUT_FILE"
 
 ## Changes
 
-\`\`\`text
-$COMMITS
-\`\`\`
+$NOTES
 
 This proposal was generated automatically by the Release Agent.
 

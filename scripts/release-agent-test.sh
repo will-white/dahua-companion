@@ -4,6 +4,7 @@
 # its dispatch/first-release bypasses, and shipped-path-scoped bump detection.
 set -e
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-agent.sh"
+NOTES_SCRIPT="$(dirname "$SCRIPT")/release-notes.sh"
 
 newrepo() {
     dir=$(mktemp -d)
@@ -84,5 +85,47 @@ mkdir -p .github && echo y > .github/wf.yml && git add -A && git commit -qm "fea
 echo mod > go.mod && git add -A
 GIT_COMMITTER_DATE=$(aged) git commit -qm "chore(deps): bump toolchain"
 run "ci-only feat does not inflate bump" "Proposed version: v1.0.1" yes
+
+# --- release-notes.sh ---
+
+# notes_has <name> <file> <substring>...: every substring must appear.
+notes_has() {
+    local name=$1 file=$2
+    shift 2
+    for want in "$@"; do
+        if ! grep -qF -- "$want" "$file"; then
+            echo "FAIL: $name - missing: $want"; cat "$file"; exit 1
+        fi
+    done
+    echo "PASS: $name"
+}
+
+newrepo; git tag v1.0.0
+echo a > pkg/a.go && git add -A && git commit -qm "feat(mqtt): shiny feature"
+echo b > pkg/b.go && git add -A && git commit -qm "fix(dahua): squash a bug"
+echo c > pkg/c.go && git add -A && git commit -qm "perf: faster"
+echo mod > go.mod && git add -A && git commit -qm "chore(deps): bump things"
+echo d > pkg/d.go && git add -A && git commit -qm "refactor: tidy" -m "BREAKING CHANGE: config renamed"
+echo e > pkg/e.go && git add -A && git commit -qm "test: more tests"
+mkdir -p .github && echo y > .github/wf.yml && git add -A && git commit -qm "feat(ci): ci-only feature"
+bash "$NOTES_SCRIPT" v1.0.0 HEAD v1.1.0 > notes.md
+notes_has "notes group by type" notes.md \
+    "## Features" "- shiny feature (" "## Fixes" "- squash a bug (" "## Performance" "- faster (" \
+    "## Dependencies" "- bump things (" "## ⚠️ Breaking changes" "- tidy (" "## Other changes" "- more tests (" \
+    "docker pull ghcr.io/will-white/dahua-companion:v1.1.0" "compare/v1.0.0...v1.1.0"
+if grep -q "ci-only feature" notes.md; then
+    echo "FAIL: notes list a CI-only commit"; exit 1
+fi
+echo "PASS: notes skip unshipped commits"
+
+if bash "$NOTES_SCRIPT" v9.9.9 HEAD > /dev/null 2>&1; then
+    echo "FAIL: notes accepted an unknown ref"; exit 1
+fi
+echo "PASS: notes reject an unknown ref"
+
+newrepo; git tag v1.0.0
+echo code > pkg/a.go && git add -A && git commit -qm "feat(mqtt): new thing"
+run "proposal carries grouped notes" "Proposed version: v1.1.0" yes
+notes_has "proposal shows the notes" release_proposal.md "## Features" "- new thing (" "**Commit:**"
 
 echo "ALL PASS"
