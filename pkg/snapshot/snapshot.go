@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"dahua_companion/pkg/metrics"
+
 	"github.com/rs/zerolog/log"
 )
 
@@ -54,9 +56,11 @@ func (s *Snapshotter) Request(topic string, channel int, priority bool) {
 	if s.inFlight {
 		if !priority || s.priority {
 			log.Debug().Str("topic", topic).Msg("Snapshot already in progress; skipped")
+			metrics.Snapshots.Inc("skipped")
 			return
 		}
 		log.Debug().Str("topic", topic).Msg("Press snapshot replaces in-progress detection snapshot")
+		metrics.Snapshots.Inc("superseded")
 		s.cancel()
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, fetchTimeout)
@@ -71,6 +75,7 @@ func (s *Snapshotter) Request(topic string, channel int, priority bool) {
 		if err != nil {
 			if ctx.Err() == nil || ctx.Err() == context.DeadlineExceeded {
 				log.Error().Err(err).Str("topic", topic).Msg("Snapshot fetch failed")
+				metrics.Snapshots.Inc("failed")
 			}
 			return
 		}

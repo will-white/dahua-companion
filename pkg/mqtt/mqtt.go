@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dahua_companion/pkg/config"
+	"dahua_companion/pkg/metrics"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog/log"
@@ -30,6 +31,7 @@ const publishTimeout = 5 * time.Second
 const drainTimeout = 2 * time.Second
 
 type event struct {
+	kind     string // metrics label: "press" or "human"
 	topic    string
 	payload  string
 	received time.Time
@@ -255,23 +257,24 @@ const (
 // topic, ahead of any queued detections. It never blocks: if the queue is
 // full the event is dropped.
 func (c *Client) PublishPress(channel int) {
-	c.enqueue(c.presses, c.cfg.Topic, pressEventType, channel)
+	c.enqueue(c.presses, "press", c.cfg.Topic, pressEventType, channel)
 }
 
 // PublishHuman queues a human detection on channel for delivery to the human
 // topic. It never blocks: if the queue is full the event is dropped.
 func (c *Client) PublishHuman(channel int) {
-	c.enqueue(c.detections, c.cfg.HumanTopic, humanEventType, channel)
+	c.enqueue(c.detections, "human", c.cfg.HumanTopic, humanEventType, channel)
 }
 
-func (c *Client) enqueue(queue chan event, topic, eventType string, channel int) {
+func (c *Client) enqueue(queue chan event, kind, topic, eventType string, channel int) {
 	now := time.Now()
-	ev := event{topic: topic, payload: c.payload(eventType, channel, now), received: now}
+	ev := event{kind: kind, topic: topic, payload: c.payload(eventType, channel, now), received: now}
 	select {
 	case queue <- ev:
 		log.Info().Str("topic", topic).Msg("Message queued")
 	default:
 		log.Warn().Str("topic", topic).Msg("Queue is full; dropping event")
+		metrics.EventsDropped.Inc(kind, "queue_full")
 	}
 }
 
@@ -340,22 +343,31 @@ func (c *Client) drainQueue(queue chan event, deadline time.Time) {
 			remaining := time.Until(deadline)
 			if remaining <= 0 || !c.client.IsConnectionOpen() {
 				log.Warn().Str("topic", ev.topic).Msg("Dropping queued event at shutdown")
+				metrics.EventsDropped.Inc(ev.kind, "shutdown")
 				continue
 			}
 			if time.Since(ev.received) > maxEventAge {
 				log.Warn().Str("topic", ev.topic).Msg("Dropping stale event")
+				metrics.EventsDropped.Inc(ev.kind, "stale")
 				continue
 			}
 			token := c.client.Publish(ev.topic, 1, false, ev.payload)
 			if !token.WaitTimeout(remaining) || token.Error() != nil {
 				log.Error().Str("topic", ev.topic).Msg("Failed to flush queued event at shutdown")
+				metrics.EventsDropped.Inc(ev.kind, "publish_failed")
 				continue
 			}
+			c.recordPublished(ev)
 			log.Info().Str("topic", ev.topic).Dur("latency_ms", time.Since(ev.received)).Msg("Message published during shutdown drain")
 		default:
 			return
 		}
 	}
+}
+
+func (c *Client) recordPublished(ev event) {
+	metrics.EventsPublished.Inc(ev.kind)
+	metrics.PublishLatency.Observe(time.Since(ev.received), ev.kind)
 }
 
 func (c *Client) deliver(ctx context.Context, ev event) {
@@ -365,6 +377,7 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 		}
 		if time.Since(ev.received) > maxEventAge {
 			log.Warn().Str("topic", ev.topic).Msg("Broker unreachable; dropping stale event")
+			metrics.EventsDropped.Inc(ev.kind, "stale")
 			return
 		}
 		select {
@@ -376,6 +389,7 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 	}
 	if time.Since(ev.received) > maxEventAge {
 		log.Warn().Str("topic", ev.topic).Msg("Dropping stale event")
+		metrics.EventsDropped.Inc(ev.kind, "stale")
 		return
 	}
 	// QoS 1: the broker acks the publish, so a half-open connection surfaces
@@ -383,12 +397,15 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 	token := c.client.Publish(ev.topic, 1, false, ev.payload)
 	if !token.WaitTimeout(publishTimeout) {
 		log.Error().Str("topic", ev.topic).Dur("timeout_ms", publishTimeout).Msg("Broker did not ack publish in time; dropping event")
+		metrics.EventsDropped.Inc(ev.kind, "publish_failed")
 		return
 	}
 	if err := token.Error(); err != nil {
 		log.Error().Err(err).Str("topic", ev.topic).Msg("Failed to publish message to MQTT broker")
+		metrics.EventsDropped.Inc(ev.kind, "publish_failed")
 		return
 	}
+	c.recordPublished(ev)
 	log.Info().Str("topic", ev.topic).Dur("latency_ms", time.Since(ev.received)).Msg("Message published from queue")
 }
 
@@ -400,17 +417,21 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 func (c *Client) PublishSnapshot(topic string, img []byte) {
 	if !c.client.IsConnectionOpen() {
 		log.Warn().Str("topic", topic).Msg("Broker unreachable; dropping snapshot")
+		metrics.Snapshots.Inc("dropped")
 		return
 	}
 	token := c.client.Publish(topic, 1, false, img)
 	if !token.WaitTimeout(publishTimeout) {
 		log.Error().Str("topic", topic).Msg("Broker did not ack snapshot in time")
+		metrics.Snapshots.Inc("dropped")
 		return
 	}
 	if err := token.Error(); err != nil {
 		log.Error().Err(err).Str("topic", topic).Msg("Failed to publish snapshot")
+		metrics.Snapshots.Inc("dropped")
 		return
 	}
+	metrics.Snapshots.Inc("published")
 	log.Info().Str("topic", topic).Int("bytes", len(img)).Msg("Snapshot published")
 }
 

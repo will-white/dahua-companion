@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"dahua_companion/pkg/config"
+	"dahua_companion/pkg/metrics"
 
 	"github.com/cenkalti/backoff/v7"
 	"github.com/icholy/digest"
@@ -49,6 +50,14 @@ func (e EventKind) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// label is the event's metrics label.
+func (e EventKind) label() string {
+	if e == HumanDetected {
+		return "human"
+	}
+	return "press"
 }
 
 // Event is one camera event: what happened and on which video channel (the
@@ -205,7 +214,11 @@ func (c *Client) Listen(ctx context.Context, onEvent func(Event)) {
 	// 10s.
 	bo.MaxInterval = 10 * time.Second
 	_, err := backoff.Retry(ctx, func() (struct{}, error) {
-		return struct{}{}, c.listen(ctx, bo, onEvent)
+		err := c.listen(ctx, bo, onEvent)
+		if err != nil && ctx.Err() == nil {
+			metrics.CameraFailures.Inc()
+		}
+		return struct{}{}, err
 	}, backoff.WithBackOff(bo), backoff.WithMaxElapsedTime(0))
 	if err != nil && ctx.Err() == nil {
 		log.Error().Err(err).Msg("Dahua listen retry loop failed")
@@ -247,6 +260,7 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	}
 
 	log.Info().Msg("Connected to HTTP stream and listening for events")
+	metrics.CameraConnects.Inc()
 	c.setConnected(true)
 	defer c.setConnected(false)
 	// The camera is reachable again: only consecutive failures should grow the
@@ -264,8 +278,10 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 		}
 		if ev.Kind == HumanDetected && c.humanCoolingDown(time.Now()) {
 			log.Debug().Int("channel", ev.Channel).Msg("Human detection within cooldown; suppressed")
+			metrics.EventsSuppressed.Inc(ev.Kind.label())
 			continue
 		}
+		metrics.EventsReceived.Inc(ev.Kind.label())
 		log.Info().Stringer("event", ev.Kind).Int("channel", ev.Channel).Msg("Camera event received")
 		onEvent(ev)
 	}
