@@ -384,7 +384,7 @@ func coolingDown(window time.Duration, last *time.Time, now time.Time) bool {
 // names its events differently. Heartbeats and multipart framing are skipped
 // so the log stays readable.
 func logUnhandledLine(line string) {
-	if line == "" || line == "Heartbeat" || strings.HasPrefix(line, "--") ||
+	if line == "" || strings.EqualFold(line, "Heartbeat") || strings.HasPrefix(line, "--") ||
 		strings.HasPrefix(line, "Content-Type:") || strings.HasPrefix(line, "Content-Length:") {
 		return
 	}
