@@ -13,8 +13,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// maxEventAge is how long a doorbell event stays worth delivering: a press
-// only matters while someone might still be at the door.
+// maxEventAge is how long an event stays worth delivering: a press or a
+// detection only matters while someone might still be at the door.
 const maxEventAge = 30 * time.Second
 
 // reconnectPoll is how often to re-check the connection while holding an
@@ -30,6 +30,7 @@ const publishTimeout = 5 * time.Second
 const drainTimeout = 2 * time.Second
 
 type event struct {
+	topic    string
 	payload  string
 	received time.Time
 }
@@ -132,24 +133,32 @@ func (c *Client) publishAvailabilityLocked() {
 	logPublishOutcome(token, "availability "+payload)
 }
 
-// publishDiscovery announces a Home Assistant MQTT discovery config: an event
-// entity with device_class doorbell, wired to the press and availability
-// topics, retained so HA rediscovers it across restarts. No-op unless
-// MQTT_DISCOVERY_PREFIX is set.
+// publishDiscovery announces Home Assistant MQTT discovery configs: an event
+// entity with device_class doorbell wired to the press topic and, when human
+// detection is enabled, one with device_class motion wired to the human topic.
+// Both share the availability topic and are retained so HA rediscovers them
+// across restarts. No-op unless MQTT_DISCOVERY_PREFIX is set.
 func (c *Client) publishDiscovery() {
 	if c.cfg.DiscoveryPrefix == "" {
 		return
 	}
+	c.publishEventDiscovery("doorbell", "Doorbell", c.cfg.Topic, "press", "doorbell")
+	if c.cfg.HumanTopic != "" {
+		c.publishEventDiscovery("human", "Human detected", c.cfg.HumanTopic, "detected", "motion")
+	}
+}
+
+func (c *Client) publishEventDiscovery(object, name, stateTopic, eventType, deviceClass string) {
 	id := sanitizeTopicID(c.cfg.ClientID)
 	payload, err := json.Marshal(map[string]any{
-		"name":        "Doorbell",
-		"unique_id":   id + "_doorbell",
-		"state_topic": c.cfg.Topic,
-		"event_types": []string{"press"},
-		// The press payload is empty; the template supplies the event JSON
+		"name":        name,
+		"unique_id":   id + "_" + object,
+		"state_topic": stateTopic,
+		"event_types": []string{eventType},
+		// The event payload is empty; the template supplies the event JSON
 		// the HA event entity expects.
-		"value_template":     `{"event_type":"press"}`,
-		"device_class":       "doorbell",
+		"value_template":     `{"event_type":"` + eventType + `"}`,
+		"device_class":       deviceClass,
 		"availability_topic": c.cfg.AvailabilityTopic,
 		"device": map[string]any{
 			"identifiers":  []string{id},
@@ -162,12 +171,12 @@ func (c *Client) publishDiscovery() {
 		},
 	})
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal discovery config")
+		log.Error().Err(err).Str("object", object).Msg("Failed to marshal discovery config")
 		return
 	}
-	topic := c.cfg.DiscoveryPrefix + "/event/" + id + "/doorbell/config"
+	topic := c.cfg.DiscoveryPrefix + "/event/" + id + "/" + object + "/config"
 	token := c.client.Publish(topic, 1, true, string(payload))
-	logPublishOutcome(token, "discovery config")
+	logPublishOutcome(token, object+" discovery config")
 }
 
 // sanitizeTopicID reduces the client id to the [a-zA-Z0-9_-] set that
@@ -203,14 +212,14 @@ func (c *Client) IsConnected() bool {
 	return c.client.IsConnectionOpen()
 }
 
-// Publish queues a doorbell event for delivery. It never blocks: if the queue
-// is full the event is dropped.
-func (c *Client) Publish(message string) {
+// Publish queues an event for delivery to topic. It never blocks: if the
+// queue is full the event is dropped.
+func (c *Client) Publish(topic, message string) {
 	select {
-	case c.queue <- event{payload: message, received: time.Now()}:
-		log.Info().Msg("Message queued")
+	case c.queue <- event{topic: topic, payload: message, received: time.Now()}:
+		log.Info().Str("topic", topic).Msg("Message queued")
 	default:
-		log.Warn().Msg("Queue is full; dropping event")
+		log.Warn().Str("topic", topic).Msg("Queue is full; dropping event")
 	}
 }
 
@@ -240,19 +249,19 @@ func (c *Client) drain() {
 		case ev := <-c.queue:
 			remaining := time.Until(deadline)
 			if remaining <= 0 || !c.client.IsConnectionOpen() {
-				log.Warn().Msg("Dropping queued event at shutdown")
+				log.Warn().Str("topic", ev.topic).Msg("Dropping queued event at shutdown")
 				continue
 			}
 			if time.Since(ev.received) > maxEventAge {
-				log.Warn().Msg("Dropping stale doorbell event")
+				log.Warn().Str("topic", ev.topic).Msg("Dropping stale event")
 				continue
 			}
-			token := c.client.Publish(c.cfg.Topic, 1, false, ev.payload)
+			token := c.client.Publish(ev.topic, 1, false, ev.payload)
 			if !token.WaitTimeout(remaining) || token.Error() != nil {
-				log.Error().Msg("Failed to flush queued event at shutdown")
+				log.Error().Str("topic", ev.topic).Msg("Failed to flush queued event at shutdown")
 				continue
 			}
-			log.Info().Dur("latency_ms", time.Since(ev.received)).Msg("Message published during shutdown drain")
+			log.Info().Str("topic", ev.topic).Dur("latency_ms", time.Since(ev.received)).Msg("Message published during shutdown drain")
 		default:
 			return
 		}
@@ -265,7 +274,7 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 			return
 		}
 		if time.Since(ev.received) > maxEventAge {
-			log.Warn().Msg("Broker unreachable; dropping stale doorbell event")
+			log.Warn().Str("topic", ev.topic).Msg("Broker unreachable; dropping stale event")
 			return
 		}
 		select {
@@ -276,21 +285,21 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 		}
 	}
 	if time.Since(ev.received) > maxEventAge {
-		log.Warn().Msg("Dropping stale doorbell event")
+		log.Warn().Str("topic", ev.topic).Msg("Dropping stale event")
 		return
 	}
 	// QoS 1: the broker acks the publish, so a half-open connection surfaces
 	// as an error here instead of a silent drop.
-	token := c.client.Publish(c.cfg.Topic, 1, false, ev.payload)
+	token := c.client.Publish(ev.topic, 1, false, ev.payload)
 	if !token.WaitTimeout(publishTimeout) {
-		log.Error().Dur("timeout_ms", publishTimeout).Msg("Broker did not ack publish in time; dropping event")
+		log.Error().Str("topic", ev.topic).Dur("timeout_ms", publishTimeout).Msg("Broker did not ack publish in time; dropping event")
 		return
 	}
 	if err := token.Error(); err != nil {
-		log.Error().Err(err).Msg("Failed to publish message to MQTT broker")
+		log.Error().Err(err).Str("topic", ev.topic).Msg("Failed to publish message to MQTT broker")
 		return
 	}
-	log.Info().Dur("latency_ms", time.Since(ev.received)).Msg("Message published from queue")
+	log.Info().Str("topic", ev.topic).Dur("latency_ms", time.Since(ev.received)).Msg("Message published from queue")
 }
 
 func (c *Client) Disconnect() {
