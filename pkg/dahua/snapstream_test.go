@@ -72,7 +72,7 @@ func TestListenSnapshots(t *testing.T) {
 	stream := snapPart("text/plain", "Heartbeat") +
 		// A press and its image, with a heartbeat in between.
 		snapPart("text/plain", "Events[0].EventBaseInfo.Code=AlarmLocal\nEvents[0].EventBaseInfo.Action=Start\nEvents[0].EventBaseInfo.Index=0\n") +
-		snapPart("text/plain", "Heartbeat") +
+		snapPart("text/plain", "heartbeat") +
 		snapPart("image/jpeg", "press-jpeg") +
 		// A Stop's image is discarded.
 		snapPart("text/plain", "Events[0].EventBaseInfo.Code=AlarmLocal\nEvents[0].EventBaseInfo.Action=Stop\n") +

@@ -93,7 +93,8 @@ func readSnapshotParts(body io.Reader, contentType string, deliver func(Event, [
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(string(text)) == "Heartbeat" {
+		// The API docs spell it both "heartbeat" and "Heartbeat".
+		if strings.EqualFold(strings.TrimSpace(string(text)), "Heartbeat") {
 			continue // heartbeats don't separate an event from its image
 		}
 		if ev, ok := parseSnapshotEvent(string(text)); ok {
