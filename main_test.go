@@ -61,8 +61,16 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 			fmt.Fprint(w, "name=Doorbell")
 			return
 		}
+		if strings.Contains(r.URL.Path, "snapshot") {
+			fmt.Fprint(w, "jpeg-"+r.URL.Query().Get("channel"))
+			return
+		}
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=myboundary")
 		fmt.Fprint(w, "Code=AlarmLocal;action=Start;index=0\r\n")
+		w.(http.Flusher).Flush()
+		// Let the press snapshot finish first: one in flight at a time means
+		// a detection arriving mid-fetch would (by design) get none.
+		time.Sleep(500 * time.Millisecond)
 		fmt.Fprint(w, "Code=SmartMotionHuman;action=Start;index=0\r\n")
 		w.(http.Flusher).Flush()
 		for {
@@ -86,6 +94,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	t.Setenv("MQTT_AVAILABILITY_TOPIC", "doorbell/availability")
 	t.Setenv("MQTT_DISCOVERY_PREFIX", "homeassistant")
 	t.Setenv("MQTT_PAYLOAD_FORMAT", "json")
+	t.Setenv("SNAPSHOT", "press,human")
 	t.Setenv("HOSTNAME_OR_IP", strings.TrimPrefix(cam.URL, "http://"))
 	t.Setenv("DAHUA_USERNAME", "admin")
 	t.Setenv("DAHUA_PASSWORD", "secret")
@@ -96,6 +105,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	humans := make(chan struct{}, 16)
 	availability := make(chan string, 16)
 	discovery := make(chan string, 16)
+	snapshots := make(chan string, 16)
 	obsOpts := mqtt.NewClientOptions().AddBroker("tcp://" + brokerAddr).SetClientID("e2e-observer")
 	obsOpts.SetConnectRetry(true)
 	obsOpts.SetConnectRetryInterval(100 * time.Millisecond)
@@ -113,6 +123,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	subscribe("doorbell/pressed", func(_ mqtt.Client, m mqtt.Message) { presses <- string(m.Payload()) })
 	subscribe("doorbell/human", func(_ mqtt.Client, _ mqtt.Message) { humans <- struct{}{} })
 	subscribe("doorbell/availability", func(_ mqtt.Client, m mqtt.Message) { availability <- string(m.Payload()) })
+	subscribe("doorbell/+/snapshot", func(_ mqtt.Client, m mqtt.Message) { snapshots <- m.Topic() + "=" + string(m.Payload()) })
 	subscribe("homeassistant/#", func(_ mqtt.Client, m mqtt.Message) { discovery <- m.Topic() })
 
 	// main() parses flags; hide go test's own flags from it.
@@ -145,9 +156,26 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("human detection never arrived on doorbell/human")
 	}
+	wantSnapshots := map[string]bool{
+		"doorbell/pressed/snapshot=jpeg-1": true,
+		"doorbell/human/snapshot=jpeg-1":   true,
+	}
+	for len(wantSnapshots) > 0 {
+		select {
+		case got := <-snapshots:
+			if !wantSnapshots[got] {
+				t.Errorf("unexpected snapshot %q", got)
+			}
+			delete(wantSnapshots, got)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("snapshots never arrived: %v", wantSnapshots)
+		}
+	}
 	wantDiscovery := map[string]bool{
-		"homeassistant/event/e2e-companion/doorbell/config": true,
-		"homeassistant/event/e2e-companion/human/config":    true,
+		"homeassistant/event/e2e-companion/doorbell/config":          true,
+		"homeassistant/event/e2e-companion/human/config":             true,
+		"homeassistant/image/e2e-companion/doorbell_snapshot/config": true,
+		"homeassistant/image/e2e-companion/human_snapshot/config":    true,
 	}
 	for len(wantDiscovery) > 0 {
 		select {

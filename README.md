@@ -25,6 +25,12 @@ More specifically we publish only the *started* events, since we don't care when
 
 This project also has wrappers around the HTTP subscription and MQTT broker to always make sure it's connected: the camera stream runs under a heartbeat watchdog so a dead connection is rebuilt within seconds, and publishes are acknowledged by the broker. Events are buffered briefly while the broker reconnects, but anything older than 30 seconds is dropped instead of delivered late — a doorbell press only matters while someone might still be at the door. Presses are queued separately from, and always delivered ahead of, human detections, so a burst of detections can never delay or crowd out a ring.
 
+### Snapshots
+
+Set `SNAPSHOT=press,human` (or just one of them) and each event is followed by a JPEG still from the camera on `<event topic>/snapshot` — `doorbell/pressed/snapshot` and `doorbell/human/snapshot` by default. With discovery, Home Assistant gets two image entities, **Last ring** and **Last person**, so a ring's picture is never overwritten by someone walking past afterwards.
+
+The event itself is published first and never waits on the camera; the still follows about a second later, so the person may have moved slightly. Only one snapshot is fetched at a time: while one is in flight further detections get none, but a press takes over from a detection's fetch. Peak memory stays around one image (≈100–400 KB) however busy the doorway, and snapshots are never retained on the broker or held for a reconnect — if the broker is down, the still is dropped.
+
 Availability is published retained on `doorbell/availability` (`online`/`offline`): it goes `offline` when the camera stream drops and an MQTT Last Will covers the process dying outright, so your automation can tell you the doorbell is *down* instead of just going quiet. Point your Home Assistant entity/trigger availability at that topic.
 
 Set `MQTT_DISCOVERY_PREFIX=homeassistant` and the doorbell announces itself via [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery): Home Assistant auto-creates a device with a doorbell **Event entity** (plus a motion Event entity for human detection), events and availability already wired — no YAML needed.
@@ -66,6 +72,7 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |
 | `MQTT_PAYLOAD_FORMAT` | no | `empty` (default) or `json` — see above |
 | `HUMAN_COOLDOWN` | no | minimum gap between published human detections, defaults to `10s`; `0` publishes every one |
+| `SNAPSHOT` | no | comma-separated events that also publish a camera still: `press`, `human`, or both; empty (default) disables |
 | `LOG_LEVEL` | no | `info` (default), `debug`, `warn`, … — `debug` logs every camera stream line the app doesn't handle, useful for supporting a new camera model |
 | `APP_ENV` | no | `development` switches to human-readable console logs |
 

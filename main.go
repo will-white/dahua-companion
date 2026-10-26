@@ -16,6 +16,7 @@ import (
 	"dahua_companion/pkg/health"
 	"dahua_companion/pkg/logger"
 	"dahua_companion/pkg/mqtt"
+	"dahua_companion/pkg/snapshot"
 
 	"github.com/rs/zerolog/log"
 )
@@ -42,6 +43,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Snapshots of an event follow its (queued) publish; fetching takes far
+	// longer than delivering, so the image lands after the event it belongs to.
+	snapshots := snapshot.New(ctx, dahuaClient.Snapshot, mqttClient.PublishSnapshot)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -50,8 +55,14 @@ func main() {
 			switch ev.Kind {
 			case dahua.DoorbellPressed:
 				mqttClient.PublishPress(ev.Channel)
+				if cfg.Mqtt.SnapshotEnabled(config.SnapshotPress) {
+					snapshots.Request(cfg.Mqtt.PressSnapshotTopic(), ev.Channel, true)
+				}
 			case dahua.HumanDetected:
 				mqttClient.PublishHuman(ev.Channel)
+				if cfg.Mqtt.SnapshotEnabled(config.SnapshotHuman) {
+					snapshots.Request(cfg.Mqtt.HumanSnapshotTopic(), ev.Channel, false)
+				}
 			}
 		})
 	}()
@@ -66,6 +77,7 @@ func main() {
 	stop()
 
 	wg.Wait()
+	snapshots.Wait()
 	mqttClient.Disconnect()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

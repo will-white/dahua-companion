@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -13,6 +15,12 @@ import (
 const (
 	PayloadEmpty = "empty"
 	PayloadJSON  = "json"
+)
+
+// Events that SNAPSHOT can name.
+const (
+	SnapshotPress = "press"
+	SnapshotHuman = "human"
 )
 
 type Mqtt struct {
@@ -29,10 +37,24 @@ type Mqtt struct {
 	// PayloadFormat is PayloadEmpty (the event is the signal) or PayloadJSON
 	// (event type, timestamp and camera channel).
 	PayloadFormat string `envconfig:"MQTT_PAYLOAD_FORMAT" default:"empty"`
+	// Snapshot lists the events (SnapshotPress, SnapshotHuman) that also
+	// publish a camera still to "<event topic>/snapshot"; empty disables.
+	Snapshot []string `envconfig:"SNAPSHOT"`
 	// DiscoveryPrefix enables Home Assistant MQTT discovery when set (HA's
 	// default prefix is "homeassistant"); empty disables it.
 	DiscoveryPrefix string `envconfig:"MQTT_DISCOVERY_PREFIX"`
 }
+
+// SnapshotEnabled reports whether SNAPSHOT names event.
+func (m *Mqtt) SnapshotEnabled(event string) bool {
+	return slices.Contains(m.Snapshot, event)
+}
+
+// PressSnapshotTopic is where press snapshots are published.
+func (m *Mqtt) PressSnapshotTopic() string { return m.Topic + "/snapshot" }
+
+// HumanSnapshotTopic is where human detection snapshots are published.
+func (m *Mqtt) HumanSnapshotTopic() string { return m.HumanTopic + "/snapshot" }
 
 // The camera credentials are prefixed DAHUA_ on purpose: bare USERNAME and
 // PASSWORD collide with variables the surrounding environment may already set
@@ -80,6 +102,16 @@ func Load() *Config {
 	}
 	if c.Mqtt.PayloadFormat != PayloadEmpty && c.Mqtt.PayloadFormat != PayloadJSON {
 		log.Fatal().Str("format", c.Mqtt.PayloadFormat).Msg("MQTT_PAYLOAD_FORMAT must be empty or json")
+	}
+	for i, event := range c.Mqtt.Snapshot {
+		event = strings.TrimSpace(event)
+		c.Mqtt.Snapshot[i] = event
+		switch {
+		case event != SnapshotPress && event != SnapshotHuman:
+			log.Fatal().Str("event", event).Msg("SNAPSHOT entries must be press or human")
+		case event == SnapshotHuman && c.Mqtt.HumanTopic == "":
+			log.Fatal().Msg("SNAPSHOT includes human but human detection is disabled (MQTT_HUMAN_TOPIC is empty)")
+		}
 	}
 	if c.Dahua.Username == "" || c.Dahua.Password == "" {
 		log.Fatal().Msg("DAHUA_USERNAME and DAHUA_PASSWORD are required")

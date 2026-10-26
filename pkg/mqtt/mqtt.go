@@ -155,38 +155,59 @@ func (c *Client) publishDiscovery() {
 	if c.cfg.HumanTopic != "" {
 		c.publishEventDiscovery("human", "Human detected", c.cfg.HumanTopic, humanEventType, "motion")
 	}
+	if c.cfg.SnapshotEnabled(config.SnapshotPress) {
+		c.publishDiscoveryConfig("image", "doorbell_snapshot", map[string]any{
+			"name":         "Last ring",
+			"image_topic":  c.cfg.PressSnapshotTopic(),
+			"content_type": "image/jpeg",
+		})
+	}
+	if c.cfg.SnapshotEnabled(config.SnapshotHuman) {
+		c.publishDiscoveryConfig("image", "human_snapshot", map[string]any{
+			"name":         "Last person",
+			"image_topic":  c.cfg.HumanSnapshotTopic(),
+			"content_type": "image/jpeg",
+		})
+	}
 }
 
 func (c *Client) publishEventDiscovery(object, name, stateTopic, eventType, deviceClass string) {
-	id := sanitizeTopicID(c.cfg.ClientID)
 	entity := map[string]any{
-		"name":               name,
-		"unique_id":          id + "_" + object,
-		"state_topic":        stateTopic,
-		"event_types":        []string{eventType},
-		"device_class":       deviceClass,
-		"availability_topic": c.cfg.AvailabilityTopic,
-		"device": map[string]any{
-			"identifiers":  []string{id},
-			"name":         "Dahua Companion",
-			"manufacturer": "Dahua",
-		},
-		"origin": map[string]any{
-			"name": "dahua-companion",
-			"url":  "https://github.com/will-white/dahua-companion",
-		},
+		"name":         name,
+		"state_topic":  stateTopic,
+		"event_types":  []string{eventType},
+		"device_class": deviceClass,
 	}
 	// A JSON payload already carries event_type (its other fields become
 	// event attributes); an empty one needs the template to supply it.
 	if c.cfg.PayloadFormat != config.PayloadJSON {
 		entity["value_template"] = `{"event_type":"` + eventType + `"}`
 	}
+	c.publishDiscoveryConfig("event", object, entity)
+}
+
+// publishDiscoveryConfig completes entity with the fields every entity of
+// this device shares and publishes it, retained, as
+// <prefix>/<component>/<id>/<object>/config.
+func (c *Client) publishDiscoveryConfig(component, object string, entity map[string]any) {
+	id := sanitizeTopicID(c.cfg.ClientID)
+	entity["unique_id"] = id + "_" + object
+	entity["availability_topic"] = c.cfg.AvailabilityTopic
+	entity["device"] = map[string]any{
+		"identifiers":  []string{id},
+		"name":         "Dahua Companion",
+		"manufacturer": "Dahua",
+	}
+	entity["origin"] = map[string]any{
+		"name": "dahua-companion",
+		"url":  "https://github.com/will-white/dahua-companion",
+	}
 	payload, err := json.Marshal(entity)
 	if err != nil {
 		log.Error().Err(err).Str("object", object).Msg("Failed to marshal discovery config")
 		return
 	}
-	topic := c.cfg.DiscoveryPrefix + "/event/" + id + "/" + object + "/config"
+	topic := c.cfg.DiscoveryPrefix + "/" + component + "/" + id + "/" + object + "/config"
 	token := c.client.Publish(topic, 1, true, string(payload))
 	logPublishOutcome(token, object+" discovery config")
 }
@@ -369,6 +390,28 @@ func (c *Client) deliver(ctx context.Context, ev event) {
 		return
 	}
 	log.Info().Str("topic", ev.topic).Dur("latency_ms", time.Since(ev.received)).Msg("Message published from queue")
+}
+
+// PublishSnapshot sends a camera still to topic, not retained: a stale image
+// is worse than none. Snapshots bypass the event queues - they are best
+// effort, and holding images for a reconnect would defeat the memory bound -
+// so a down broker simply drops them. It blocks until the broker acks or
+// publishTimeout passes.
+func (c *Client) PublishSnapshot(topic string, img []byte) {
+	if !c.client.IsConnectionOpen() {
+		log.Warn().Str("topic", topic).Msg("Broker unreachable; dropping snapshot")
+		return
+	}
+	token := c.client.Publish(topic, 1, false, img)
+	if !token.WaitTimeout(publishTimeout) {
+		log.Error().Str("topic", topic).Msg("Broker did not ack snapshot in time")
+		return
+	}
+	if err := token.Error(); err != nil {
+		log.Error().Err(err).Str("topic", topic).Msg("Failed to publish snapshot")
+		return
+	}
+	log.Info().Str("topic", topic).Int("bytes", len(img)).Msg("Snapshot published")
 }
 
 func (c *Client) Disconnect() {
