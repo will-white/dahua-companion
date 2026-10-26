@@ -74,8 +74,10 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 
 // stream runs one long-poll connection to url: it requests it under the idle
 // watchdog and, once the camera answers 200, hands the body (read through the
-// watchdog) to consume. track marks the connection in IsConnected and
-// OnConnectionChange. It always returns an error: the stream ending is one.
+// watchdog) to consume. track marks the event stream (IsConnected,
+// OnConnectionChange, the camera stream metrics); otherwise this is the
+// snapshot stream (SnapshotStreamConnected and its metrics). It always returns
+// an error: the stream ending is one.
 func (c *Client) stream(ctx context.Context, bo *backoff.ExponentialBackOff, name, url string, track bool, consume func(body io.Reader, contentType string) error) error {
 	// The camera speaks at least every heartbeatSeconds, so a silent stream
 	// means the connection died underneath us (camera reboot, network drop)
@@ -109,6 +111,10 @@ func (c *Client) stream(ctx context.Context, bo *backoff.ExponentialBackOff, nam
 		metrics.CameraConnects.Inc()
 		c.setConnected(true)
 		defer c.setConnected(false)
+	} else {
+		metrics.SnapshotStreamConnects.Inc()
+		c.snapshotConnected.Store(true)
+		defer c.snapshotConnected.Store(false)
 	}
 	// The camera is reachable again: only consecutive failures should grow the
 	// retry delay, so start the next reconnect from the shortest interval.

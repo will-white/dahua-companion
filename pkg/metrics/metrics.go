@@ -191,6 +191,10 @@ var (
 		"Event stream connections established.")
 	CameraFailures = NewCounter("dahua_companion_camera_stream_failures_total",
 		"Event stream attempts that failed or connections that dropped.")
+	SnapshotStreamConnects = NewCounter("dahua_companion_snapshot_stream_connects_total",
+		"Event-snapshot stream connections established (SNAPSHOT_SOURCE=event).")
+	SnapshotStreamFailures = NewCounter("dahua_companion_snapshot_stream_failures_total",
+		"Event-snapshot stream attempts that failed or connections that dropped (SNAPSHOT_SOURCE=event).")
 	EventsReceived = NewCounter("dahua_companion_events_received_total",
 		"Camera events reported for publishing.", "event")
 	EventsSuppressed = NewCounter("dahua_companion_events_suppressed_total",
