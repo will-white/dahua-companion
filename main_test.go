@@ -190,10 +190,14 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 		}
 	}
 
+	// One connection per request: a pooled client can leave a dialed-but-unused
+	// connection open, which http.Server.Shutdown waits out for 5s.
+	httpc := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 	// /health must report 200 once broker, stream, and probe are all up.
 	healthDeadline := time.Now().Add(10 * time.Second)
 	for {
-		res, err := http.Get("http://127.0.0.1:" + healthPort + "/health")
+		res, err := httpc.Get("http://127.0.0.1:" + healthPort + "/health")
 		if err == nil {
 			res.Body.Close()
 			if res.StatusCode == http.StatusOK {
@@ -207,7 +211,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	}
 
 	// /metrics reflects what just happened.
-	res, err := http.Get("http://127.0.0.1:" + healthPort + "/metrics")
+	res, err := httpc.Get("http://127.0.0.1:" + healthPort + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}
