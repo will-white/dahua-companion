@@ -35,8 +35,8 @@ func freePort(t *testing.T) string {
 }
 
 // TestEndToEndDoorbellPress boots the real main() against an embedded MQTT
-// broker and a fake camera: the press on the fake event stream must arrive on
-// the press topic, availability and HA discovery must be announced, /health
+// broker and a fake camera: the press and the human detection on the fake
+// event stream must arrive on their topics, availability and HA discovery must be announced, /health
 // must report 200, and SIGTERM must shut everything down cleanly. It exercises
 // the wiring in main.go that the package tests cannot, so it is the only test
 // allowed to call main() (the -healthcheck flag registration is once-only).
@@ -52,7 +52,8 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	go func() { _ = broker.Serve() }()
 	t.Cleanup(func() { _ = broker.Close() })
 
-	// Fake camera: answers health probes, streams one press, then heartbeats
+	// Fake camera: answers health probes, streams one press and one human
+	// detection, then heartbeats
 	// until the client hangs up.
 	cam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "magicBox") {
@@ -61,6 +62,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=myboundary")
 		fmt.Fprint(w, "Code=AlarmLocal;action=Start;index=0\r\n")
+		fmt.Fprint(w, "Code=SmartMotionHuman;action=Start;index=0\r\n")
 		w.(http.Flusher).Flush()
 		for {
 			select {
@@ -89,6 +91,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 
 	// Observe what main publishes.
 	presses := make(chan struct{}, 16)
+	humans := make(chan struct{}, 16)
 	availability := make(chan string, 16)
 	discovery := make(chan string, 16)
 	obsOpts := mqtt.NewClientOptions().AddBroker("tcp://" + brokerAddr).SetClientID("e2e-observer")
@@ -106,6 +109,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 		}
 	}
 	subscribe("doorbell/pressed", func(_ mqtt.Client, _ mqtt.Message) { presses <- struct{}{} })
+	subscribe("doorbell/human", func(_ mqtt.Client, _ mqtt.Message) { humans <- struct{}{} })
 	subscribe("doorbell/availability", func(_ mqtt.Client, m mqtt.Message) { availability <- string(m.Payload()) })
 	subscribe("homeassistant/#", func(_ mqtt.Client, m mqtt.Message) { discovery <- m.Topic() })
 
@@ -128,12 +132,24 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 		t.Fatal("press never arrived on doorbell/pressed")
 	}
 	select {
-	case topic := <-discovery:
-		if topic != "homeassistant/event/e2e-companion/doorbell/config" {
-			t.Errorf("discovery config topic = %q", topic)
-		}
+	case <-humans:
 	case <-time.After(10 * time.Second):
-		t.Fatal("discovery config never arrived")
+		t.Fatal("human detection never arrived on doorbell/human")
+	}
+	wantDiscovery := map[string]bool{
+		"homeassistant/event/e2e-companion/doorbell/config": true,
+		"homeassistant/event/e2e-companion/human/config":    true,
+	}
+	for len(wantDiscovery) > 0 {
+		select {
+		case topic := <-discovery:
+			if !wantDiscovery[topic] {
+				t.Errorf("unexpected discovery config topic %q", topic)
+			}
+			delete(wantDiscovery, topic)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("discovery configs never arrived: %v", wantDiscovery)
+		}
 	}
 
 	// /health must report 200 once broker, stream, and probe are all up.
