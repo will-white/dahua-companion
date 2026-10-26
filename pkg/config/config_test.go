@@ -163,6 +163,20 @@ func TestSecretFiles(t *testing.T) {
 	}
 }
 
+func TestLoadCameraNeedsNoMQTT(t *testing.T) {
+	clearAmbientEnv(t)
+	t.Chdir(t.TempDir())
+	t.Setenv("HOSTNAME_OR_IP", "doorbell")
+	t.Setenv("DAHUA_USERNAME", "admin")
+	t.Setenv("DAHUA_PASSWORD", "secret")
+
+	d := LoadCamera()
+
+	if d.Host != "doorbell" || d.Username != "admin" || d.Scheme != SchemeHTTP {
+		t.Errorf("LoadCamera() = %+v, want the camera settings with defaults and no MQTT required", d)
+	}
+}
+
 func TestLegacyCredentialFallback(t *testing.T) {
 	clearAmbientEnv(t)
 	t.Chdir(t.TempDir())

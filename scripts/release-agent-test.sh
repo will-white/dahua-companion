@@ -86,6 +86,21 @@ echo mod > go.mod && git add -A
 GIT_COMMITTER_DATE=$(aged) git commit -qm "chore(deps): bump toolchain"
 run "ci-only feat does not inflate bump" "Proposed version: v1.0.1" yes
 
+# --- shipped-path lists stay complete ---
+# Every top-level Go source file must reach the image (.dockerignore is an
+# allow-list) and count as shipped for releases and notes; a new file missing
+# from either silently breaks the build or skips a release.
+REPO_ROOT="$(dirname "$SCRIPT")/.."
+for f in "$REPO_ROOT"/*.go; do
+    name=$(basename "$f")
+    case $name in *_test.go) continue ;; esac
+    grep -qxF "!/$name" "$REPO_ROOT/.dockerignore" || { echo "FAIL: $name missing from .dockerignore"; exit 1; }
+    for s in release-agent.sh release-notes.sh; do
+        grep -qE "^SHIPPED_PATHS=\(.*\b$name\b" "$REPO_ROOT/scripts/$s" || { echo "FAIL: $name missing from SHIPPED_PATHS in $s"; exit 1; }
+    done
+done
+echo "PASS: every top-level Go file is shipped"
+
 # --- release-notes.sh ---
 
 # notes_has <name> <file> <substring>...: every substring must appear.

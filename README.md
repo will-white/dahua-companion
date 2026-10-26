@@ -56,6 +56,19 @@ services:
 
 The image ships a `HEALTHCHECK` that probes `/health`. Note Docker only *marks* the container unhealthy — plain `docker run`/compose never restarts it for that. In-process reconnection already recovers from camera and broker outages on its own; if you also want automatic restarts on a wedged process, pair the healthcheck with [autoheal](https://github.com/willfarrell/docker-autoheal) or an orchestrator that acts on health status.
 
+## Capturing your camera's traffic
+
+Dahua and Amcrest models don't all report events the same way. To see exactly what yours sends — or to help add support for it — record its raw streams:
+
+```sh
+docker run --rm --env-file .env -v "$PWD:/out" ghcr.io/will-white/dahua-companion:latest \
+  /app/main -capture 2m -capture-dir /out
+```
+
+(The image's default command is `./main`, so the binary path is needed when passing flags. Outside Docker: `./main -capture 2m`.)
+
+While it records, ring the doorbell and walk past it. It subscribes to *every* event code (not just the ones this app handles), needs only the camera settings (no MQTT), and prints which event codes it saw when it finishes. Add `-capture-snapshots` to also record the event-snapshot stream used by `SNAPSHOT_SOURCE=event` — that file contains pictures of your doorway, so it's off by default. Review the recordings before sharing them.
+
 ## Configuration
 
 Configuration is via environment variables. A `.env` file in the working directory is also read (copy `.env.example` to get started); real environment variables win over `.env.local`, which wins over `.env`.
