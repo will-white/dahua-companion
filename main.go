@@ -35,6 +35,7 @@ func main() {
 	// Availability mirrors the event stream: no stream, no doorbell.
 	dahuaClient.OnConnectionChange = mqttClient.PublishAvailability
 	dahuaClient.DetectHumans = cfg.Mqtt.HumanTopic != ""
+	dahuaClient.HumanCooldown = cfg.Dahua.HumanCooldown
 	healthServer := health.New(":"+cfg.HealthPort, mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
 	healthServer.Start()
 
@@ -45,13 +46,12 @@ func main() {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		// The event itself is the signal; there is no payload.
 		dahuaClient.Listen(ctx, func(ev dahua.Event) {
-			switch ev {
+			switch ev.Kind {
 			case dahua.DoorbellPressed:
-				mqttClient.Publish(cfg.Mqtt.Topic, "")
+				mqttClient.PublishPress(ev.Channel)
 			case dahua.HumanDetected:
-				mqttClient.Publish(cfg.Mqtt.HumanTopic, "")
+				mqttClient.PublishHuman(ev.Channel)
 			}
 		})
 	}()

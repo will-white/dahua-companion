@@ -1,6 +1,7 @@
 package dahua
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 func TestMain(m *testing.M) {
@@ -26,7 +28,8 @@ func TestParseEvent(t *testing.T) {
 		name     string
 		line     string
 		expected bool
-		event    Event
+		event    EventKind
+		channel  int
 	}{
 		{
 			name:     "valid doorbell press event",
@@ -96,6 +99,12 @@ func TestParseEvent(t *testing.T) {
 			expected: false,
 		},
 		{
+			name:     "second channel",
+			line:     "Code=AlarmLocal;action=Start;index=1",
+			expected: true,
+			channel:  1,
+		},
+		{
 			name:     "vehicle detection",
 			line:     "Code=SmartMotionVehicle;action=Start;index=0",
 			expected: false,
@@ -104,16 +113,16 @@ func TestParseEvent(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			want := tc.event
-			if want == 0 {
-				want = DoorbellPressed
+			want := Event{Kind: tc.event, Channel: tc.channel}
+			if want.Kind == 0 {
+				want.Kind = DoorbellPressed
 			}
 			ev, ok := parseEvent(tc.line)
 			if ok != tc.expected {
 				t.Errorf("ok = %v, want %v", ok, tc.expected)
 			}
 			if ok && ev != want {
-				t.Errorf("event = %v, want %v", ev, want)
+				t.Errorf("event = %+v, want %+v", ev, want)
 			}
 		})
 	}
@@ -177,7 +186,7 @@ func TestListenStream(t *testing.T) {
 	if codes != "[AlarmLocal,SmartMotionHuman]" {
 		t.Errorf("subscribed codes = %q, want human detection included", codes)
 	}
-	if len(events) != 2 || events[0] != DoorbellPressed || events[1] != HumanDetected {
+	if len(events) != 2 || events[0].Kind != DoorbellPressed || events[1].Kind != HumanDetected {
 		t.Errorf("events = %v, want [doorbell_pressed human_detected]", events)
 	}
 	if !connectedDuringEvent {
@@ -188,6 +197,53 @@ func TestListenStream(t *testing.T) {
 	}
 	if len(transitions) != 2 || !transitions[0] || transitions[1] {
 		t.Errorf("connection transitions = %v, want [true false]", transitions)
+	}
+}
+
+func TestLogUnhandledLine(t *testing.T) {
+	var buf bytes.Buffer
+	oldLogger, oldLevel := log.Logger, zerolog.GlobalLevel()
+	log.Logger = zerolog.New(&buf)
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() {
+		log.Logger = oldLogger
+		zerolog.SetGlobalLevel(oldLevel)
+	})
+
+	for _, line := range []string{"", "Heartbeat", "--myboundary", "Content-Type: text/plain", "Content-Length: 39"} {
+		logUnhandledLine(line)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("framing lines were logged: %s", buf.String())
+	}
+	logUnhandledLine("Code=CrossRegionDetection;action=Start;index=0;data={")
+	if !strings.Contains(buf.String(), "CrossRegionDetection") {
+		t.Errorf("event line not logged: %q", buf.String())
+	}
+}
+
+func TestHumanCooldown(t *testing.T) {
+	c := testClient("http://camera")
+	c.HumanCooldown = 10 * time.Second
+	start := time.Now()
+	for _, tc := range []struct {
+		at         time.Duration
+		suppressed bool
+	}{
+		{0, false},
+		{5 * time.Second, true},   // within the window of the reported one
+		{9 * time.Second, true},   // suppressed detections don't extend it
+		{10 * time.Second, false}, // window over: reported, window restarts
+		{15 * time.Second, true},
+	} {
+		if got := c.humanCoolingDown(start.Add(tc.at)); got != tc.suppressed {
+			t.Errorf("detection at +%v suppressed = %v, want %v", tc.at, got, tc.suppressed)
+		}
+	}
+
+	c.HumanCooldown = 0
+	if c.humanCoolingDown(start.Add(16 * time.Second)) {
+		t.Error("detection suppressed with the cooldown disabled")
 	}
 }
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -84,13 +85,14 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	t.Setenv("MQTT_TOPIC", "doorbell/pressed")
 	t.Setenv("MQTT_AVAILABILITY_TOPIC", "doorbell/availability")
 	t.Setenv("MQTT_DISCOVERY_PREFIX", "homeassistant")
+	t.Setenv("MQTT_PAYLOAD_FORMAT", "json")
 	t.Setenv("HOSTNAME_OR_IP", strings.TrimPrefix(cam.URL, "http://"))
 	t.Setenv("DAHUA_USERNAME", "admin")
 	t.Setenv("DAHUA_PASSWORD", "secret")
 	t.Setenv("HEALTH_PORT", healthPort)
 
 	// Observe what main publishes.
-	presses := make(chan struct{}, 16)
+	presses := make(chan string, 16)
 	humans := make(chan struct{}, 16)
 	availability := make(chan string, 16)
 	discovery := make(chan string, 16)
@@ -108,7 +110,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 			t.Fatalf("subscribe %s: %v", topic, token.Error())
 		}
 	}
-	subscribe("doorbell/pressed", func(_ mqtt.Client, _ mqtt.Message) { presses <- struct{}{} })
+	subscribe("doorbell/pressed", func(_ mqtt.Client, m mqtt.Message) { presses <- string(m.Payload()) })
 	subscribe("doorbell/human", func(_ mqtt.Client, _ mqtt.Message) { humans <- struct{}{} })
 	subscribe("doorbell/availability", func(_ mqtt.Client, m mqtt.Message) { availability <- string(m.Payload()) })
 	subscribe("homeassistant/#", func(_ mqtt.Client, m mqtt.Message) { discovery <- m.Topic() })
@@ -127,7 +129,14 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	// The event stream connecting flips availability online; the press follows.
 	awaitPayload(t, availability, "online")
 	select {
-	case <-presses:
+	case payload := <-presses:
+		var press struct {
+			EventType string `json:"event_type"`
+			Channel   int    `json:"channel"`
+		}
+		if err := json.Unmarshal([]byte(payload), &press); err != nil || press.EventType != "press" {
+			t.Errorf("press payload = %q, want JSON with event_type press", payload)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("press never arrived on doorbell/pressed")
 	}

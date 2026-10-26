@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // clearAmbientEnv unsets every variable Load reads (restoring afterwards), so
@@ -12,7 +13,7 @@ func clearAmbientEnv(t *testing.T) {
 	t.Helper()
 	vars := []string{
 		"MQTT_BROKER_URL", "MQTT_CLIENT_ID", "MQTT_USERNAME", "MQTT_PASSWORD",
-		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
+		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_PAYLOAD_FORMAT", "HUMAN_COOLDOWN", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
 		"DAHUA_USERNAME", "DAHUA_PASSWORD",
 		"USERNAME", "PASSWORD", "HEALTH_PORT",
 	}
@@ -78,6 +79,12 @@ DAHUA_PASSWORD=from-env-file
 	}
 	if got := cfg.Mqtt.HumanTopic; got != "doorbell/human" {
 		t.Errorf("HumanTopic = %q, want default", got)
+	}
+	if got := cfg.Mqtt.PayloadFormat; got != PayloadEmpty {
+		t.Errorf("PayloadFormat = %q, want default", got)
+	}
+	if got := cfg.Dahua.HumanCooldown; got != 10*time.Second {
+		t.Errorf("HumanCooldown = %v, want default", got)
 	}
 	if got := cfg.HealthPort; got != "8080" {
 		t.Errorf("HealthPort = %q, want default", got)
