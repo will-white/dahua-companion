@@ -13,7 +13,7 @@ Dahua's API is included in the documentation folder.
 For this project we're concerned with two events:
 
 - `AlarmLocal` — the buzzer/ringer/button pressed event. Published to `doorbell/pressed`.
-- `SmartMotionHuman` — the camera's human smart motion detection (SMD). Published to `doorbell/human`. The camera must have smart motion detection enabled with the *Human* object type; set `MQTT_HUMAN_TOPIC=` (empty) to turn this off entirely. Smart motion detection fires repeatedly while someone lingers, so detections within `HUMAN_COOLDOWN` (10s) of the last published one are suppressed.
+- `SmartMotionHuman` — the camera's human smart motion detection (SMD) — and the IVS rules `CrossLineDetection` (tripwire) and `CrossRegionDetection` (intrusion) when their event data names a `Human` object. Published to `doorbell/human`. The camera needs smart motion detection with the *Human* object type, or an IVS rule with *Human* as a target, enabled; set `MQTT_HUMAN_TOPIC=` (empty) to turn this off entirely. Smart motion detection fires repeatedly while someone lingers, so detections within `HUMAN_COOLDOWN` (10s) of the last published one are suppressed.
 
 More specifically we publish only the *started* events, since we don't care when Dahua decides an alarm or detection is "over". By default the message has no payload — the event is the signal. Set `MQTT_PAYLOAD_FORMAT=json` to get a JSON body instead:
 

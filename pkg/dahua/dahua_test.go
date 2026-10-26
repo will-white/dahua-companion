@@ -225,7 +225,7 @@ func TestListenStream(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the stream ends")
 	}
-	if codes != "[AlarmLocal,SmartMotionHuman]" {
+	if codes != "[AlarmLocal,SmartMotionHuman,CrossLineDetection,CrossRegionDetection]" {
 		t.Errorf("subscribed codes = %q, want human detection included", codes)
 	}
 	if len(events) != 2 || events[0].Kind != DoorbellPressed || events[1].Kind != HumanDetected {
@@ -262,6 +262,83 @@ func TestLogUnhandledLine(t *testing.T) {
 	if !strings.Contains(buf.String(), "CrossRegionDetection") {
 		t.Errorf("event line not logged: %q", buf.String())
 	}
+}
+
+func TestListenIVSHumanDetection(t *testing.T) {
+	part := func(lines ...string) []string {
+		return append([]string{"--myboundary", "Content-Type: text/plain", ""}, lines...)
+	}
+	var lines []string
+	// Multi-line block naming a human: reported.
+	lines = append(lines, part(
+		"Code=CrossRegionDetection;action=Start;index=1;data={",
+		`   "Object" : { "BoundingBox" : [ 2992, 1136, 4960, 5192 ], "ObjectType" : "Human" },`,
+		`   "Action" : "Cross", "Direction" : "Enter"`,
+		"}")...)
+	// A vehicle: not reported.
+	lines = append(lines, part(
+		"Code=CrossLineDetection;action=Start;index=0;data={",
+		`   "Object" : { "ObjectType" : "Vehicle" }`,
+		"}")...)
+	// Single-line block, lower-case pulse, human among several objects.
+	lines = append(lines, part(
+		`Code=CrossLineDetection;action=pulse;index=0;data={ "Objects" : [ { "ObjectType" : "Vehicle" }, { "ObjectType" : "Human" } ] }`)...)
+	// Stop events are ignored even when they name a human.
+	lines = append(lines, part(
+		`Code=CrossRegionDetection;action=Stop;index=0;data={ "Object" : { "ObjectType" : "Human" } }`)...)
+	// A block cut off by the next part is abandoned, and the press in that
+	// part still gets through.
+	lines = append(lines, part(
+		"Code=CrossRegionDetection;action=Start;index=0;data={",
+		`   "Object" : { "ObjectType" : "Human"`)...)
+	lines = append(lines, part("Code=AlarmLocal;action=Start;index=0")...)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, line := range lines {
+			fmt.Fprint(w, line+"\r\n")
+		}
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	c.DetectHumans = true
+	var events []Event
+	_ = c.listen(context.Background(), backoff.NewExponentialBackOff(), func(ev Event) { events = append(events, ev) })
+
+	want := []Event{
+		{Kind: HumanDetected, Channel: 1},
+		{Kind: HumanDetected, Channel: 0},
+		{Kind: DoorbellPressed, Channel: 0},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Errorf("event %d = %+v, want %+v", i, events[i], want[i])
+		}
+	}
+}
+
+func TestIVSBlockSizeCap(t *testing.T) {
+	b := startIVS("Code=CrossRegionDetection;action=Start;index=0;data={")
+	if b == nil {
+		t.Fatal("startIVS did not recognize the event")
+	}
+	if done, _ := b.feed(b.first); done {
+		t.Fatal("block finished before it closed")
+	}
+	line := `"pad": "` + strings.Repeat("x", 1024) + `",`
+	for i := 0; i < 100; i++ {
+		done, err := b.feed(line)
+		if done {
+			if err == nil {
+				t.Fatal("oversized block finished without an error")
+			}
+			return
+		}
+	}
+	t.Fatal("block grew past the cap without being abandoned")
 }
 
 func TestHumanCooldown(t *testing.T) {
