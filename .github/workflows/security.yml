@@ -19,6 +19,9 @@ jobs:
   govulncheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -32,6 +35,28 @@ jobs:
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+      # A red scheduled or main-branch run notifies nobody, so new advisories
+      # used to sit unnoticed until every PR inherited the failure. Open one
+      # tracking issue (and comment on it while it stays open) instead. PRs
+      # are left to their own check status.
+      - name: Open issue on failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "security-scan" --color "B60205" --description "Failing scheduled security scan" || true
+          ISSUE=$(gh issue list --label security-scan --state open --json number --jq '.[0].number')
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --label security-scan \
+              --title "govulncheck is failing on main" \
+              --body "govulncheck reports reachable vulnerabilities on \`main\`: $RUN_URL
+
+          Standard-library advisories are fixed by bumping the Go toolchain (go.mod, Dockerfile, and, for a minor bump, the dev container; see scripts/check-go-version.sh). Module advisories are fixed with \`go get <module>@<fixed-version>\`. Close this issue once the scan is green."
+          fi
 
   # Fails a PR that introduces dependencies with known vulnerabilities.
   # The event only carries a base/head diff on pull_request.

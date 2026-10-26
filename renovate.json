@@ -6,8 +6,9 @@
   ],
   "packageRules": [
     {
-      "description": "The Go version is declared in three places: the go.mod toolchain directive, the Dockerfile builder image, and the dev container image. Renovate sees them as three unrelated dependencies, so group them into one PR to keep them moving together. scripts/check-go-version.sh fails CI if they drift apart anyway.",
+      "description": "The Go version is declared in three places: the go.mod toolchain directive, the Dockerfile builder image, and the dev container image. Renovate sees them as three unrelated dependencies, so group them into one PR to keep them moving together. scripts/check-go-version.sh fails CI if they drift apart anyway. Patch releases are split off (separateMinorPatch) so a security patch on the current minor is never stuck behind the next minor.",
       "groupName": "go version",
+      "separateMinorPatch": true,
       "matchDatasources": [
         "golang-version",
         "docker"
@@ -17,6 +18,27 @@
         "golang",
         "mcr.microsoft.com/devcontainers/go"
       ]
+    },
+    {
+      "description": "Go patch releases are almost always security fixes (govulncheck fails CI until they land), and patch bumps never touch the dev container, which pins only the minor. Give them their own small PR and merge it automatically once CI is green, instead of waiting behind the next minor release.",
+      "matchDatasources": [
+        "golang-version",
+        "docker"
+      ],
+      "matchPackageNames": [
+        "go",
+        "golang",
+        "mcr.microsoft.com/devcontainers/go"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "groupName": "go patch",
+      "automerge": true
     }
-  ]
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "osvVulnerabilityAlerts": true
 }
