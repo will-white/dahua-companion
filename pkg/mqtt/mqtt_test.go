@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,14 +46,29 @@ type pub struct {
 type fakePaho struct {
 	mqtt.Client
 	connected atomic.Bool
+	mu        sync.Mutex // guards published for tests that publish from a goroutine
 	published []pub
 	token     fakeToken
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.connected.Load() }
 func (f *fakePaho) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.published = append(f.published, pub{topic: topic, qos: qos, retained: retained, payload: payload.(string)})
 	return &f.token
+}
+
+func (f *fakePaho) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.published)
+}
+
+func (f *fakePaho) snapshot() []pub {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]pub(nil), f.published...)
 }
 
 func newTestClient(connected bool) (*Client, *fakePaho) {
@@ -60,8 +76,9 @@ func newTestClient(connected bool) (*Client, *fakePaho) {
 	f.connected.Store(connected)
 	c := &Client{
 		client:      f,
-		cfg:         &config.Mqtt{Topic: "doorbell/pressed", AvailabilityTopic: "doorbell/availability"},
-		queue:       make(chan event, 100),
+		cfg:         &config.Mqtt{Topic: "doorbell/pressed", HumanTopic: "doorbell/human", AvailabilityTopic: "doorbell/availability", PayloadFormat: config.PayloadEmpty},
+		presses:     make(chan event, 100),
+		detections:  make(chan event, 100),
 		reconnected: make(chan struct{}, 1),
 	}
 	return c, f
@@ -69,11 +86,53 @@ func newTestClient(connected bool) (*Client, *fakePaho) {
 
 func TestPublishDropsWhenFull(t *testing.T) {
 	c, _ := newTestClient(true)
-	for i := 0; i < cap(c.queue)+10; i++ {
-		c.Publish("doorbell/pressed", "") // must never block, even beyond capacity
+	for i := 0; i < cap(c.detections)+10; i++ {
+		c.PublishHuman(0) // must never block, even beyond capacity
 	}
-	if got := len(c.queue); got != cap(c.queue) {
-		t.Errorf("queue length = %d, want %d", got, cap(c.queue))
+	if got := len(c.detections); got != cap(c.detections) {
+		t.Errorf("queue length = %d, want %d", got, cap(c.detections))
+	}
+	// A full detection queue must not cost a press its place.
+	c.PublishPress(0)
+	if got := len(c.presses); got != 1 {
+		t.Errorf("press queue length = %d, want 1 despite full detection queue", got)
+	}
+}
+
+func TestProcessQueueDeliversPressesFirst(t *testing.T) {
+	c, f := newTestClient(true)
+	c.PublishHuman(0)
+	c.PublishHuman(0)
+	c.PublishPress(0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.ProcessQueue(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.count() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	pubs := f.snapshot()
+	if len(pubs) != 3 || pubs[0].topic != "doorbell/pressed" {
+		t.Errorf("published = %+v, want the press delivered ahead of queued detections", pubs)
+	}
+}
+
+func TestPayloadFormats(t *testing.T) {
+	c, _ := newTestClient(true)
+	at := time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)
+	if got := c.payload(pressEventType, 0, at); got != "" {
+		t.Errorf("empty format payload = %q, want empty", got)
+	}
+	c.cfg.PayloadFormat = config.PayloadJSON
+	got := c.payload(humanEventType, 1, at)
+	want := `{"event_type":"detected","timestamp":"2026-10-26T06:00:00Z","channel":1}`
+	if got != want {
+		t.Errorf("json payload = %s, want %s", got, want)
 	}
 }
 
@@ -90,10 +149,10 @@ func TestDeliverPublishesFreshEvent(t *testing.T) {
 
 func TestDeliverUsesEventTopic(t *testing.T) {
 	c, f := newTestClient(true)
-	c.Publish("doorbell/pressed", "")
-	c.Publish("doorbell/human", "")
-	c.deliver(context.Background(), <-c.queue)
-	c.deliver(context.Background(), <-c.queue)
+	c.PublishPress(0)
+	c.PublishHuman(0)
+	c.deliver(context.Background(), <-c.presses)
+	c.deliver(context.Background(), <-c.detections)
 	if len(f.published) != 2 || f.published[0].topic != "doorbell/pressed" || f.published[1].topic != "doorbell/human" {
 		t.Errorf("published = %+v, want each event on its own topic in order", f.published)
 	}
@@ -118,6 +177,7 @@ func TestPublishDiscovery(t *testing.T) {
 	c, f := newTestClient(true)
 	c.cfg.ClientID = "dahua companion!" // exercises topic-id sanitization
 	c.cfg.DiscoveryPrefix = "homeassistant"
+	c.cfg.HumanTopic = "" // human detection disabled: the doorbell entity only
 	c.publishDiscovery()
 	if len(f.published) != 1 {
 		t.Fatalf("published %d messages, want 1", len(f.published))
@@ -132,6 +192,9 @@ func TestPublishDiscovery(t *testing.T) {
 	}
 	if cfg["state_topic"] != "doorbell/pressed" || cfg["availability_topic"] != "doorbell/availability" || cfg["device_class"] != "doorbell" {
 		t.Errorf("discovery config = %v, want press and availability topics wired", cfg)
+	}
+	if cfg["value_template"] != `{"event_type":"press"}` {
+		t.Errorf("value_template = %v, want it to supply the event for empty payloads", cfg["value_template"])
 	}
 }
 
@@ -157,6 +220,20 @@ func TestPublishDiscoveryIncludesHumanEntity(t *testing.T) {
 	}
 }
 
+func TestPublishDiscoveryJSONPayloadDropsTemplate(t *testing.T) {
+	c, f := newTestClient(true)
+	c.cfg.DiscoveryPrefix = "homeassistant"
+	c.cfg.PayloadFormat = config.PayloadJSON
+	c.publishDiscovery()
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(f.published[0].payload), &cfg); err != nil {
+		t.Fatalf("discovery payload is not JSON: %v", err)
+	}
+	if _, ok := cfg["value_template"]; ok {
+		t.Error("value_template set with JSON payloads; it would hide the payload's attributes")
+	}
+}
+
 func TestPublishDiscoveryDisabledByDefault(t *testing.T) {
 	c, f := newTestClient(true)
 	c.publishDiscovery()
@@ -167,7 +244,7 @@ func TestPublishDiscoveryDisabledByDefault(t *testing.T) {
 
 func TestProcessQueueDrainsQueuedEventAtShutdown(t *testing.T) {
 	c, f := newTestClient(true)
-	c.Publish("doorbell/pressed", "")
+	c.PublishPress(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	c.ProcessQueue(ctx)
@@ -178,7 +255,7 @@ func TestProcessQueueDrainsQueuedEventAtShutdown(t *testing.T) {
 
 func TestDrainDropsWhenBrokerUnreachable(t *testing.T) {
 	c, f := newTestClient(false)
-	c.Publish("doorbell/pressed", "")
+	c.PublishPress(0)
 	done := make(chan struct{})
 	go func() {
 		c.drain()

@@ -2,10 +2,17 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/rs/zerolog/log"
+)
+
+// Event payload formats for MQTT_PAYLOAD_FORMAT.
+const (
+	PayloadEmpty = "empty"
+	PayloadJSON  = "json"
 )
 
 type Mqtt struct {
@@ -19,6 +26,9 @@ type Mqtt struct {
 	// disables human detection (envconfig only applies the default when the
 	// variable is unset).
 	HumanTopic string `envconfig:"MQTT_HUMAN_TOPIC" default:"doorbell/human"`
+	// PayloadFormat is PayloadEmpty (the event is the signal) or PayloadJSON
+	// (event type, timestamp and camera channel).
+	PayloadFormat string `envconfig:"MQTT_PAYLOAD_FORMAT" default:"empty"`
 	// DiscoveryPrefix enables Home Assistant MQTT discovery when set (HA's
 	// default prefix is "homeassistant"); empty disables it.
 	DiscoveryPrefix string `envconfig:"MQTT_DISCOVERY_PREFIX"`
@@ -33,6 +43,9 @@ type Dahua struct {
 	Username string `envconfig:"DAHUA_USERNAME"`
 	Password string `envconfig:"DAHUA_PASSWORD"`
 	Host     string `envconfig:"HOSTNAME_OR_IP" required:"true"`
+	// HumanCooldown suppresses human detections that follow a published one
+	// within this window; 0 publishes every detection.
+	HumanCooldown time.Duration `envconfig:"HUMAN_COOLDOWN" default:"10s"`
 }
 
 type Config struct {
@@ -64,6 +77,9 @@ func Load() *Config {
 			log.Warn().Msg("PASSWORD is deprecated and will be removed in a future release; set DAHUA_PASSWORD")
 			c.Dahua.Password = legacy
 		}
+	}
+	if c.Mqtt.PayloadFormat != PayloadEmpty && c.Mqtt.PayloadFormat != PayloadJSON {
+		log.Fatal().Str("format", c.Mqtt.PayloadFormat).Msg("MQTT_PAYLOAD_FORMAT must be empty or json")
 	}
 	if c.Dahua.Username == "" || c.Dahua.Password == "" {
 		log.Fatal().Msg("DAHUA_USERNAME and DAHUA_PASSWORD are required")

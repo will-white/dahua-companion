@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,18 +26,18 @@ const heartbeatSeconds = 5
 // and the connection is presumed dead.
 const streamIdleTimeout = 3 * heartbeatSeconds * time.Second
 
-// Event is a camera event reported to Listen's callback.
-type Event int
+// EventKind identifies a camera event reported to Listen's callback.
+type EventKind int
 
 const (
 	// DoorbellPressed is the call button (AlarmLocal).
-	DoorbellPressed Event = iota + 1
+	DoorbellPressed EventKind = iota + 1
 	// HumanDetected is the camera's human smart motion detection
 	// (SmartMotionHuman). Only reported when DetectHumans is set.
 	HumanDetected
 )
 
-func (e Event) String() string {
+func (e EventKind) String() string {
 	switch e {
 	case DoorbellPressed:
 		return "doorbell_pressed"
@@ -45,6 +46,13 @@ func (e Event) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// Event is one camera event: what happened and on which video channel (the
+// event's index, 0 for a single-camera doorbell).
+type Event struct {
+	Kind    EventKind
+	Channel int
 }
 
 type Client struct {
@@ -56,6 +64,11 @@ type Client struct {
 	// DetectHumans, when set before Listen starts, also subscribes to human
 	// smart motion detection events.
 	DetectHumans bool
+	// HumanCooldown, when set before Listen starts, suppresses human
+	// detections that follow a reported one within this window; smart motion
+	// detection fires repeatedly while someone lingers.
+	HumanCooldown time.Duration
+	lastHuman     time.Time
 	// idleTimeout tears the event stream down when the camera has been silent
 	// for this long; heartbeats keep a healthy stream well under it.
 	idleTimeout time.Duration
@@ -158,15 +171,46 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 
 	scanner := bufio.NewScanner(&watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout})
 	for scanner.Scan() {
-		if ev, ok := parseEvent(scanner.Text()); ok {
-			log.Info().Stringer("event", ev).Msg("Camera event received")
-			onEvent(ev)
+		line := scanner.Text()
+		ev, ok := parseEvent(line)
+		if !ok {
+			logUnhandledLine(line)
+			continue
 		}
+		if ev.Kind == HumanDetected && c.humanCoolingDown(time.Now()) {
+			log.Debug().Int("channel", ev.Channel).Msg("Human detection within cooldown; suppressed")
+			continue
+		}
+		log.Info().Stringer("event", ev.Kind).Int("channel", ev.Channel).Msg("Camera event received")
+		onEvent(ev)
 	}
 	if err := scanner.Err(); err != nil {
 		return c.streamErr(ctx, streamCtx, err, "Error reading the stream")
 	}
 	return fmt.Errorf("event stream ended")
+}
+
+// humanCoolingDown reports whether a human detection at now falls within
+// HumanCooldown of the last reported one, recording now when it does not.
+func (c *Client) humanCoolingDown(now time.Time) bool {
+	if c.HumanCooldown > 0 && !c.lastHuman.IsZero() && now.Sub(c.lastHuman) < c.HumanCooldown {
+		return true
+	}
+	c.lastHuman = now
+	return false
+}
+
+// logUnhandledLine records, at debug level, stream lines that are not a
+// reported event: other event codes, Stop actions, and the JSON data blocks
+// some events carry. It is the raw material for supporting a camera that
+// names its events differently. Heartbeats and multipart framing are skipped
+// so the log stays readable.
+func logUnhandledLine(line string) {
+	if line == "" || line == "Heartbeat" || strings.HasPrefix(line, "--") ||
+		strings.HasPrefix(line, "Content-Type:") || strings.HasPrefix(line, "Content-Length:") {
+		return
+	}
+	log.Debug().Str("line", line).Msg("Unhandled camera stream line")
 }
 
 // setConnected updates the stream state and notifies OnConnectionChange.
@@ -215,11 +259,11 @@ func parseEvent(line string) (Event, bool) {
 	var ev Event
 	switch {
 	case strings.HasPrefix(line, "Code=AlarmLocal;"):
-		ev = DoorbellPressed
+		ev.Kind = DoorbellPressed
 	case strings.HasPrefix(line, "Code=SmartMotionHuman;"):
-		ev = HumanDetected
+		ev.Kind = HumanDetected
 	default:
-		return 0, false
+		return Event{}, false
 	}
 
 	parts := strings.Split(strings.TrimRight(line, ";"), ";")
@@ -231,6 +275,8 @@ func parseEvent(line string) (Event, bool) {
 		}
 	}
 
+	// A missing or malformed index means the only channel there is.
+	ev.Channel, _ = strconv.Atoi(eventData["index"])
 	action, ok := eventData["action"]
 	return ev, !ok || action == "Start"
 }

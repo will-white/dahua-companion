@@ -38,7 +38,11 @@ type event struct {
 type Client struct {
 	client mqtt.Client
 	cfg    *config.Mqtt
-	queue  chan event
+	// presses and detections are separate queues so a burst of detections
+	// can never crowd a doorbell press out (a full queue drops new events),
+	// and ProcessQueue always serves presses first.
+	presses    chan event
+	detections chan event
 	// reconnected wakes a deliver loop that is holding an event, instead of
 	// leaving it to the next reconnectPoll tick.
 	reconnected chan struct{}
@@ -50,7 +54,12 @@ type Client struct {
 }
 
 func New(cfg *config.Mqtt) *Client {
-	c := &Client{cfg: cfg, queue: make(chan event, 100), reconnected: make(chan struct{}, 1)}
+	c := &Client{
+		cfg:         cfg,
+		presses:     make(chan event, 100),
+		detections:  make(chan event, 100),
+		reconnected: make(chan struct{}, 1),
+	}
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(cfg.Broker)
 	opts.SetClientID(cfg.ClientID)
@@ -142,22 +151,19 @@ func (c *Client) publishDiscovery() {
 	if c.cfg.DiscoveryPrefix == "" {
 		return
 	}
-	c.publishEventDiscovery("doorbell", "Doorbell", c.cfg.Topic, "press", "doorbell")
+	c.publishEventDiscovery("doorbell", "Doorbell", c.cfg.Topic, pressEventType, "doorbell")
 	if c.cfg.HumanTopic != "" {
-		c.publishEventDiscovery("human", "Human detected", c.cfg.HumanTopic, "detected", "motion")
+		c.publishEventDiscovery("human", "Human detected", c.cfg.HumanTopic, humanEventType, "motion")
 	}
 }
 
 func (c *Client) publishEventDiscovery(object, name, stateTopic, eventType, deviceClass string) {
 	id := sanitizeTopicID(c.cfg.ClientID)
-	payload, err := json.Marshal(map[string]any{
-		"name":        name,
-		"unique_id":   id + "_" + object,
-		"state_topic": stateTopic,
-		"event_types": []string{eventType},
-		// The event payload is empty; the template supplies the event JSON
-		// the HA event entity expects.
-		"value_template":     `{"event_type":"` + eventType + `"}`,
+	entity := map[string]any{
+		"name":               name,
+		"unique_id":          id + "_" + object,
+		"state_topic":        stateTopic,
+		"event_types":        []string{eventType},
 		"device_class":       deviceClass,
 		"availability_topic": c.cfg.AvailabilityTopic,
 		"device": map[string]any{
@@ -169,7 +175,13 @@ func (c *Client) publishEventDiscovery(object, name, stateTopic, eventType, devi
 			"name": "dahua-companion",
 			"url":  "https://github.com/will-white/dahua-companion",
 		},
-	})
+	}
+	// A JSON payload already carries event_type (its other fields become
+	// event attributes); an empty one needs the template to supply it.
+	if c.cfg.PayloadFormat != config.PayloadJSON {
+		entity["value_template"] = `{"event_type":"` + eventType + `"}`
+	}
+	payload, err := json.Marshal(entity)
 	if err != nil {
 		log.Error().Err(err).Str("object", object).Msg("Failed to marshal discovery config")
 		return
@@ -212,15 +224,53 @@ func (c *Client) IsConnected() bool {
 	return c.client.IsConnectionOpen()
 }
 
-// Publish queues an event for delivery to topic. It never blocks: if the
-// queue is full the event is dropped.
-func (c *Client) Publish(topic, message string) {
+// Event types, shared by the JSON payload and the HA discovery config.
+const (
+	pressEventType = "press"
+	humanEventType = "detected"
+)
+
+// PublishPress queues a doorbell press on channel for delivery to the press
+// topic, ahead of any queued detections. It never blocks: if the queue is
+// full the event is dropped.
+func (c *Client) PublishPress(channel int) {
+	c.enqueue(c.presses, c.cfg.Topic, pressEventType, channel)
+}
+
+// PublishHuman queues a human detection on channel for delivery to the human
+// topic. It never blocks: if the queue is full the event is dropped.
+func (c *Client) PublishHuman(channel int) {
+	c.enqueue(c.detections, c.cfg.HumanTopic, humanEventType, channel)
+}
+
+func (c *Client) enqueue(queue chan event, topic, eventType string, channel int) {
+	now := time.Now()
+	ev := event{topic: topic, payload: c.payload(eventType, channel, now), received: now}
 	select {
-	case c.queue <- event{topic: topic, payload: message, received: time.Now()}:
+	case queue <- ev:
 		log.Info().Str("topic", topic).Msg("Message queued")
 	default:
 		log.Warn().Str("topic", topic).Msg("Queue is full; dropping event")
 	}
+}
+
+// payload renders an event in the configured format: empty (the event is the
+// signal) or a JSON object with the event type, time and camera channel.
+func (c *Client) payload(eventType string, channel int, at time.Time) string {
+	if c.cfg.PayloadFormat != config.PayloadJSON {
+		return ""
+	}
+	b, err := json.Marshal(struct {
+		EventType string `json:"event_type"`
+		Timestamp string `json:"timestamp"`
+		Channel   int    `json:"channel"`
+	}{eventType, at.UTC().Format(time.RFC3339Nano), channel})
+	if err != nil {
+		// Unreachable for this fixed shape; an empty payload still signals.
+		log.Error().Err(err).Msg("Failed to marshal event payload")
+		return ""
+	}
+	return string(b)
 }
 
 // ProcessQueue delivers queued events until ctx is cancelled, then makes a
@@ -230,11 +280,24 @@ func (c *Client) Publish(topic, message string) {
 // events older than maxEventAge are dropped rather than delivered late.
 func (c *Client) ProcessQueue(ctx context.Context) {
 	for {
+		// Presses jump the line: check them alone first, so a backlog of
+		// detections never delays a ring.
 		select {
 		case <-ctx.Done():
 			c.drain()
 			return
-		case ev := <-c.queue:
+		case ev := <-c.presses:
+			c.deliver(ctx, ev)
+			continue
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			c.drain()
+			return
+		case ev := <-c.presses:
+			c.deliver(ctx, ev)
+		case ev := <-c.detections:
 			c.deliver(ctx, ev)
 		}
 	}
@@ -244,9 +307,15 @@ func (c *Client) ProcessQueue(ctx context.Context) {
 // never waits for a reconnect: if the broker is down the events are dropped.
 func (c *Client) drain() {
 	deadline := time.Now().Add(drainTimeout)
+	// Presses first, as in ProcessQueue.
+	c.drainQueue(c.presses, deadline)
+	c.drainQueue(c.detections, deadline)
+}
+
+func (c *Client) drainQueue(queue chan event, deadline time.Time) {
 	for {
 		select {
-		case ev := <-c.queue:
+		case ev := <-queue:
 			remaining := time.Until(deadline)
 			if remaining <= 0 || !c.client.IsConnectionOpen() {
 				log.Warn().Str("topic", ev.topic).Msg("Dropping queued event at shutdown")
