@@ -12,7 +12,7 @@ func clearAmbientEnv(t *testing.T) {
 	t.Helper()
 	vars := []string{
 		"MQTT_BROKER_URL", "MQTT_CLIENT_ID", "MQTT_USERNAME", "MQTT_PASSWORD",
-		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
+		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
 		"DAHUA_USERNAME", "DAHUA_PASSWORD",
 		"USERNAME", "PASSWORD", "HEALTH_PORT",
 	}
@@ -76,8 +76,28 @@ DAHUA_PASSWORD=from-env-file
 	if got := cfg.Mqtt.AvailabilityTopic; got != "doorbell/availability" {
 		t.Errorf("AvailabilityTopic = %q, want default", got)
 	}
+	if got := cfg.Mqtt.HumanTopic; got != "doorbell/human" {
+		t.Errorf("HumanTopic = %q, want default", got)
+	}
 	if got := cfg.HealthPort; got != "8080" {
 		t.Errorf("HealthPort = %q, want default", got)
+	}
+}
+
+// TestHumanTopicEmptyDisables locks in the opt-out: an explicitly empty
+// MQTT_HUMAN_TOPIC must not be replaced by the default.
+func TestHumanTopicEmptyDisables(t *testing.T) {
+	clearAmbientEnv(t)
+	t.Chdir(t.TempDir())
+	setRequiredEnv(t)
+	t.Setenv("DAHUA_USERNAME", "admin")
+	t.Setenv("DAHUA_PASSWORD", "secret")
+	t.Setenv("MQTT_HUMAN_TOPIC", "")
+
+	cfg := Load()
+
+	if got := cfg.Mqtt.HumanTopic; got != "" {
+		t.Errorf("HumanTopic = %q, want empty to disable human detection", got)
 	}
 }
 
