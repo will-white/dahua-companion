@@ -23,6 +23,7 @@ const probeCacheTTL = 60 * time.Second
 
 type Server struct {
 	server         *http.Server
+	mux            *http.ServeMux
 	mqttConnected  func() bool
 	dahuaConnected func() bool
 	probe          func(context.Context) error
@@ -51,7 +52,14 @@ func New(addr string, mqttConnected, dahuaConnected func() bool, probe func(cont
 		probeTTL:       probeCacheTTL,
 	}
 	mux.HandleFunc("/health", s.healthCheckHandler)
+	s.mux = mux
 	return s
+}
+
+// Handle serves handler at pattern alongside /health (e.g. /metrics); call it
+// before Start.
+func (s *Server) Handle(pattern string, handler http.Handler) {
+	s.mux.Handle(pattern, handler)
 }
 
 // Start serves in a background goroutine.

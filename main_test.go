@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -203,6 +204,24 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 			t.Fatal("/health never reported 200")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// /metrics reflects what just happened.
+	res, err := http.Get("http://127.0.0.1:" + healthPort + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsBody, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	for _, want := range []string{
+		`dahua_companion_events_published_total{event="press"} 1`,
+		`dahua_companion_events_published_total{event="human"} 1`,
+		"dahua_companion_camera_stream_up 1",
+		"dahua_companion_mqtt_connected 1",
+	} {
+		if !strings.Contains(string(metricsBody), want) {
+			t.Errorf("/metrics missing %q:\n%s", want, metricsBody)
+		}
 	}
 
 	// Graceful shutdown: availability flips offline and main returns.

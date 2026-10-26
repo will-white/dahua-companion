@@ -15,6 +15,7 @@ import (
 	"dahua_companion/pkg/dahua"
 	"dahua_companion/pkg/health"
 	"dahua_companion/pkg/logger"
+	"dahua_companion/pkg/metrics"
 	"dahua_companion/pkg/mqtt"
 	"dahua_companion/pkg/snapshot"
 
@@ -41,6 +42,9 @@ func main() {
 	dahuaClient.DetectHumans = cfg.Mqtt.HumanTopic != ""
 	dahuaClient.HumanCooldown = cfg.Dahua.HumanCooldown
 	healthServer := health.New(":"+cfg.HealthPort, mqttClient.IsConnected, dahuaClient.IsConnected, dahuaClient.Probe)
+	metrics.GaugeFunc("dahua_companion_camera_stream_up", "1 while the camera event stream is connected.", metrics.BoolGauge(dahuaClient.IsConnected))
+	metrics.GaugeFunc("dahua_companion_mqtt_connected", "1 while the MQTT broker connection is open.", metrics.BoolGauge(mqttClient.IsConnected))
+	healthServer.Handle("/metrics", metrics.Handler())
 	healthServer.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -35,6 +35,8 @@ Availability is published retained on `doorbell/availability` (`online`/`offline
 
 Set `MQTT_DISCOVERY_PREFIX=homeassistant` and the doorbell announces itself via [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery): Home Assistant auto-creates a device with a doorbell **Event entity** (plus a motion Event entity for human detection), events and availability already wired — no YAML needed.
 
+A `/metrics` endpoint on the same port serves Prometheus metrics: rings and detections received, published and dropped (with the reason), suppressed detections, average camera-to-broker latency, snapshot outcomes, camera stream reconnects, and whether the camera stream and broker are up right now.
+
 A `/health` endpoint (port `8080` by default) returns 200 only when the MQTT connection is up, the event stream is attached, and the camera answers a live read-only probe. A successful probe is reused for 60 seconds so frequent health checks don't load the camera; a failure is re-probed every time.
 
 ## Running it
