@@ -21,11 +21,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestIsDoorbellPressed(t *testing.T) {
+func TestParseEvent(t *testing.T) {
 	testCases := []struct {
 		name     string
 		line     string
 		expected bool
+		event    Event
 	}{
 		{
 			name:     "valid doorbell press event",
@@ -77,13 +78,42 @@ func TestIsDoorbellPressed(t *testing.T) {
 			line:     "Heartbeat",
 			expected: false,
 		},
+		{
+			name:     "human detection start",
+			line:     "Code=SmartMotionHuman;action=Start;index=0",
+			expected: true,
+			event:    HumanDetected,
+		},
+		{
+			name:     "human detection start with data block",
+			line:     "Code=SmartMotionHuman;action=Start;index=0;data={",
+			expected: true,
+			event:    HumanDetected,
+		},
+		{
+			name:     "human detection stop",
+			line:     "Code=SmartMotionHuman;action=Stop;index=0",
+			expected: false,
+		},
+		{
+			name:     "vehicle detection",
+			line:     "Code=SmartMotionVehicle;action=Start;index=0",
+			expected: false,
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := isDoorbellPressed(tc.line)
-			if actual != tc.expected {
-				t.Errorf("expected %v, got %v", tc.expected, actual)
+			want := tc.event
+			if want == 0 {
+				want = DoorbellPressed
+			}
+			ev, ok := parseEvent(tc.line)
+			if ok != tc.expected {
+				t.Errorf("ok = %v, want %v", ok, tc.expected)
+			}
+			if ok && ev != want {
+				t.Errorf("event = %v, want %v", ev, want)
 			}
 		})
 	}
@@ -112,8 +142,16 @@ func TestListenStream(t *testing.T) {
 		"Content-Type: text/plain",
 		"",
 		"Code=AlarmLocal;action=Start;index=0",
+		"--myboundary",
+		"Content-Type: text/plain",
+		"",
+		"Code=SmartMotionHuman;action=Start;index=0;data={",
+		`   "Object" : { "ObjectType" : "Human" }`,
+		"}",
 	}
+	var codes string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codes = r.URL.Query().Get("codes")
 		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=myboundary")
 		for _, line := range lines {
 			fmt.Fprint(w, line+"\r\n")
@@ -125,18 +163,22 @@ func TestListenStream(t *testing.T) {
 	c := testClient(srv.URL)
 	var transitions []bool
 	c.OnConnectionChange = func(up bool) { transitions = append(transitions, up) }
-	events := 0
+	c.DetectHumans = true
+	var events []Event
 	connectedDuringEvent := false
-	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {
-		events++
+	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func(ev Event) {
+		events = append(events, ev)
 		connectedDuringEvent = c.IsConnected()
 	})
 
 	if err == nil {
 		t.Fatal("expected an error when the stream ends")
 	}
-	if events != 1 {
-		t.Errorf("events = %d, want 1", events)
+	if codes != "[AlarmLocal,SmartMotionHuman]" {
+		t.Errorf("subscribed codes = %q, want human detection included", codes)
+	}
+	if len(events) != 2 || events[0] != DoorbellPressed || events[1] != HumanDetected {
+		t.Errorf("events = %v, want [doorbell_pressed human_detected]", events)
 	}
 	if !connectedDuringEvent {
 		t.Error("IsConnected() = false while the stream was open")
@@ -149,6 +191,20 @@ func TestListenStream(t *testing.T) {
 	}
 }
 
+func TestListenSubscribesDoorbellOnlyByDefault(t *testing.T) {
+	var codes string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codes = r.URL.Query().Get("codes")
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	_ = c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) {})
+	if codes != "[AlarmLocal]" {
+		t.Errorf("subscribed codes = %q, want only AlarmLocal without DetectHumans", codes)
+	}
+}
+
 func TestListenNonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -156,7 +212,7 @@ func TestListenNonOKStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := testClient(srv.URL)
-	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {
+	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) {
 		t.Error("onEvent called for a failed connection")
 	})
 	if err == nil {
@@ -179,7 +235,7 @@ func TestListenIdleStreamTimesOut(t *testing.T) {
 	c.idleTimeout = 100 * time.Millisecond
 	done := make(chan error, 1)
 	go func() {
-		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) {})
 	}()
 	select {
 	case err := <-done:
@@ -206,7 +262,7 @@ func TestListenHeartbeatsHoldOffWatchdog(t *testing.T) {
 
 	c := testClient(srv.URL)
 	c.idleTimeout = 300 * time.Millisecond
-	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) {})
 	if err == nil || strings.Contains(err.Error(), "no data from camera") {
 		t.Errorf("listen() = %v, want clean stream end without a watchdog trip", err)
 	}
@@ -224,7 +280,7 @@ func TestListenUnresponsiveConnectIsBounded(t *testing.T) {
 	c.idleTimeout = 100 * time.Millisecond
 	done := make(chan error, 1)
 	go func() {
-		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func() {})
+		done <- c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) {})
 	}()
 	select {
 	case err := <-done:
