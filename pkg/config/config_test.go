@@ -13,7 +13,7 @@ func clearAmbientEnv(t *testing.T) {
 	t.Helper()
 	vars := []string{
 		"MQTT_BROKER_URL", "MQTT_CLIENT_ID", "MQTT_USERNAME", "MQTT_PASSWORD",
-		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_PAYLOAD_FORMAT", "HUMAN_COOLDOWN", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
+		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_PAYLOAD_FORMAT", "HUMAN_COOLDOWN", "SNAPSHOT", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
 		"DAHUA_USERNAME", "DAHUA_PASSWORD",
 		"USERNAME", "PASSWORD", "HEALTH_PORT",
 	}
@@ -105,6 +105,24 @@ func TestHumanTopicEmptyDisables(t *testing.T) {
 
 	if got := cfg.Mqtt.HumanTopic; got != "" {
 		t.Errorf("HumanTopic = %q, want empty to disable human detection", got)
+	}
+}
+
+func TestSnapshotList(t *testing.T) {
+	clearAmbientEnv(t)
+	t.Chdir(t.TempDir())
+	setRequiredEnv(t)
+	t.Setenv("DAHUA_USERNAME", "admin")
+	t.Setenv("DAHUA_PASSWORD", "secret")
+	t.Setenv("SNAPSHOT", "press, human")
+
+	cfg := Load()
+
+	if !cfg.Mqtt.SnapshotEnabled(SnapshotPress) || !cfg.Mqtt.SnapshotEnabled(SnapshotHuman) {
+		t.Errorf("Snapshot = %q, want press and human enabled (spaces trimmed)", cfg.Mqtt.Snapshot)
+	}
+	if got := cfg.Mqtt.HumanSnapshotTopic(); got != "doorbell/human/snapshot" {
+		t.Errorf("HumanSnapshotTopic = %q", got)
 	}
 }
 

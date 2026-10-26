@@ -348,6 +348,41 @@ func TestListenUnresponsiveConnectIsBounded(t *testing.T) {
 	}
 }
 
+func TestSnapshot(t *testing.T) {
+	var gotChannel string
+	status, body := http.StatusOK, "\xff\xd8jpeg"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotChannel = r.URL.Query().Get("channel")
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	img, err := c.Snapshot(context.Background(), 0)
+	if err != nil || string(img) != body {
+		t.Fatalf("Snapshot() = %q, %v; want the image", img, err)
+	}
+	if gotChannel != "1" {
+		t.Errorf("requested channel %q, want 1 (event index 0 is API channel 1)", gotChannel)
+	}
+
+	status = http.StatusUnauthorized
+	if _, err := c.Snapshot(context.Background(), 0); err == nil {
+		t.Error("Snapshot() = nil error, want error for non-OK status")
+	}
+
+	status, body = http.StatusOK, ""
+	if _, err := c.Snapshot(context.Background(), 0); err == nil {
+		t.Error("Snapshot() = nil error, want error for an empty image")
+	}
+
+	body = strings.Repeat("x", maxSnapshotBytes+1)
+	if _, err := c.Snapshot(context.Background(), 0); err == nil {
+		t.Error("Snapshot() = nil error, want error for an oversized image")
+	}
+}
+
 func TestProbe(t *testing.T) {
 	status := http.StatusOK
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

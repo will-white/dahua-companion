@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,7 +56,14 @@ func (f *fakePaho) IsConnectionOpen() bool { return f.connected.Load() }
 func (f *fakePaho) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.published = append(f.published, pub{topic: topic, qos: qos, retained: retained, payload: payload.(string)})
+	var s string
+	switch p := payload.(type) {
+	case string:
+		s = p
+	case []byte:
+		s = string(p)
+	}
+	f.published = append(f.published, pub{topic: topic, qos: qos, retained: retained, payload: s})
 	return &f.token
 }
 
@@ -231,6 +239,47 @@ func TestPublishDiscoveryJSONPayloadDropsTemplate(t *testing.T) {
 	}
 	if _, ok := cfg["value_template"]; ok {
 		t.Error("value_template set with JSON payloads; it would hide the payload's attributes")
+	}
+}
+
+func TestPublishDiscoverySnapshotImages(t *testing.T) {
+	c, f := newTestClient(true)
+	c.cfg.ClientID = "companion"
+	c.cfg.DiscoveryPrefix = "homeassistant"
+	c.cfg.Snapshot = []string{config.SnapshotPress, config.SnapshotHuman}
+	c.publishDiscovery()
+	images := map[string]map[string]any{}
+	for _, p := range f.published {
+		if !strings.HasPrefix(p.topic, "homeassistant/image/") {
+			continue
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(p.payload), &cfg); err != nil {
+			t.Fatalf("image discovery payload is not JSON: %v", err)
+		}
+		images[p.topic] = cfg
+	}
+	press := images["homeassistant/image/companion/doorbell_snapshot/config"]
+	human := images["homeassistant/image/companion/human_snapshot/config"]
+	if press == nil || human == nil {
+		t.Fatalf("image discovery topics = %v, want press and human snapshot images", images)
+	}
+	if press["image_topic"] != "doorbell/pressed/snapshot" || human["image_topic"] != "doorbell/human/snapshot" || press["content_type"] != "image/jpeg" {
+		t.Errorf("image configs = %v / %v, want the snapshot topics wired as JPEG images", press, human)
+	}
+}
+
+func TestPublishSnapshot(t *testing.T) {
+	c, f := newTestClient(true)
+	c.PublishSnapshot("doorbell/pressed/snapshot", []byte("jpeg"))
+	if len(f.published) != 1 || f.published[0].payload != "jpeg" || f.published[0].retained {
+		t.Errorf("published = %+v, want one non-retained snapshot", f.published)
+	}
+
+	f.connected.Store(false)
+	c.PublishSnapshot("doorbell/pressed/snapshot", []byte("jpeg"))
+	if len(f.published) != 1 {
+		t.Errorf("published %d messages, want the snapshot dropped while disconnected", len(f.published))
 	}
 }
 
