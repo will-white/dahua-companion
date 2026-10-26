@@ -2,7 +2,7 @@ module dahua_companion
 
 go 1.25.0
 
-toolchain go1.26.10
+toolchain go1.27.3
 
 require (
 	github.com/cenkalti/backoff/v7 v7.0.0
