@@ -25,12 +25,37 @@ const heartbeatSeconds = 5
 // and the connection is presumed dead.
 const streamIdleTimeout = 3 * heartbeatSeconds * time.Second
 
+// Event is a camera event reported to Listen's callback.
+type Event int
+
+const (
+	// DoorbellPressed is the call button (AlarmLocal).
+	DoorbellPressed Event = iota + 1
+	// HumanDetected is the camera's human smart motion detection
+	// (SmartMotionHuman). Only reported when DetectHumans is set.
+	HumanDetected
+)
+
+func (e Event) String() string {
+	switch e {
+	case DoorbellPressed:
+		return "doorbell_pressed"
+	case HumanDetected:
+		return "human_detected"
+	default:
+		return "unknown"
+	}
+}
+
 type Client struct {
 	HttpClient *http.Client
 	Cfg        *config.Dahua
 	// OnConnectionChange, when set before Listen starts, is called from the
 	// listen goroutine on every event stream connect and disconnect.
 	OnConnectionChange func(connected bool)
+	// DetectHumans, when set before Listen starts, also subscribes to human
+	// smart motion detection events.
+	DetectHumans bool
 	// idleTimeout tears the event stream down when the camera has been silent
 	// for this long; heartbeats keep a healthy stream well under it.
 	idleTimeout time.Duration
@@ -74,8 +99,9 @@ func (c *Client) Probe(ctx context.Context) error {
 }
 
 // Listen maintains the event stream until ctx is cancelled, reconnecting with
-// exponential backoff and calling onEvent for every doorbell press.
-func (c *Client) Listen(ctx context.Context, onEvent func()) {
+// exponential backoff and calling onEvent for every doorbell press (and human
+// detection, when DetectHumans is set).
+func (c *Client) Listen(ctx context.Context, onEvent func(Event)) {
 	bo := backoff.NewExponentialBackOff()
 	// The default 60s ceiling would grow the blind window during a long camera
 	// outage; attempts against a LAN camera are cheap, so retry at least every
@@ -89,8 +115,12 @@ func (c *Client) Listen(ctx context.Context, onEvent func()) {
 	}
 }
 
-func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onEvent func()) error {
-	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[AlarmLocal]&heartbeat=%d", c.Cfg.Host, heartbeatSeconds)
+func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onEvent func(Event)) error {
+	codes := "AlarmLocal"
+	if c.DetectHumans {
+		codes += ",SmartMotionHuman"
+	}
+	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[%s]&heartbeat=%d", c.Cfg.Host, codes, heartbeatSeconds)
 
 	// The camera speaks at least every heartbeatSeconds, so a silent stream
 	// means the connection died underneath us (camera reboot, network drop)
@@ -128,9 +158,9 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 
 	scanner := bufio.NewScanner(&watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout})
 	for scanner.Scan() {
-		if isDoorbellPressed(scanner.Text()) {
-			log.Info().Msg("Doorbell pressed")
-			onEvent()
+		if ev, ok := parseEvent(scanner.Text()); ok {
+			log.Info().Stringer("event", ev).Msg("Camera event received")
+			onEvent(ev)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -177,9 +207,19 @@ func (w *watchdogReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func isDoorbellPressed(line string) bool {
-	if !strings.HasPrefix(line, "Code=AlarmLocal;") {
-		return false
+// parseEvent recognizes the start of a doorbell press or human detection in a
+// "Code=...;action=...;" line. Stop events are ignored: only the moment it
+// happens is worth announcing. Events with a data payload put "data={" at the
+// end of the line and the JSON on the following lines, which never match.
+func parseEvent(line string) (Event, bool) {
+	var ev Event
+	switch {
+	case strings.HasPrefix(line, "Code=AlarmLocal;"):
+		ev = DoorbellPressed
+	case strings.HasPrefix(line, "Code=SmartMotionHuman;"):
+		ev = HumanDetected
+	default:
+		return 0, false
 	}
 
 	parts := strings.Split(strings.TrimRight(line, ";"), ";")
@@ -192,5 +232,5 @@ func isDoorbellPressed(line string) bool {
 	}
 
 	action, ok := eventData["action"]
-	return eventData["Code"] == "AlarmLocal" && (!ok || action == "Start")
+	return ev, !ok || action == "Start"
 }

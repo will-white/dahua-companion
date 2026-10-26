@@ -70,7 +70,7 @@ func newTestClient(connected bool) (*Client, *fakePaho) {
 func TestPublishDropsWhenFull(t *testing.T) {
 	c, _ := newTestClient(true)
 	for i := 0; i < cap(c.queue)+10; i++ {
-		c.Publish("") // must never block, even beyond capacity
+		c.Publish("doorbell/pressed", "") // must never block, even beyond capacity
 	}
 	if got := len(c.queue); got != cap(c.queue) {
 		t.Errorf("queue length = %d, want %d", got, cap(c.queue))
@@ -79,12 +79,23 @@ func TestPublishDropsWhenFull(t *testing.T) {
 
 func TestDeliverPublishesFreshEvent(t *testing.T) {
 	c, f := newTestClient(true)
-	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	c.deliver(context.Background(), event{topic: "doorbell/pressed", payload: "", received: time.Now()})
 	if len(f.published) != 1 {
 		t.Errorf("published %d messages, want 1", len(f.published))
 	}
 	if p := f.published[0]; p.qos != 1 {
 		t.Errorf("published with qos %d, want 1 so the broker acks delivery", p.qos)
+	}
+}
+
+func TestDeliverUsesEventTopic(t *testing.T) {
+	c, f := newTestClient(true)
+	c.Publish("doorbell/pressed", "")
+	c.Publish("doorbell/human", "")
+	c.deliver(context.Background(), <-c.queue)
+	c.deliver(context.Background(), <-c.queue)
+	if len(f.published) != 2 || f.published[0].topic != "doorbell/pressed" || f.published[1].topic != "doorbell/human" {
+		t.Errorf("published = %+v, want each event on its own topic in order", f.published)
 	}
 }
 
@@ -124,6 +135,28 @@ func TestPublishDiscovery(t *testing.T) {
 	}
 }
 
+func TestPublishDiscoveryIncludesHumanEntity(t *testing.T) {
+	c, f := newTestClient(true)
+	c.cfg.ClientID = "companion"
+	c.cfg.DiscoveryPrefix = "homeassistant"
+	c.cfg.HumanTopic = "doorbell/human"
+	c.publishDiscovery()
+	if len(f.published) != 2 {
+		t.Fatalf("published %d messages, want doorbell and human configs", len(f.published))
+	}
+	p := f.published[1]
+	if p.topic != "homeassistant/event/companion/human/config" || !p.retained {
+		t.Errorf("human discovery publish = %+v, want retained config under the prefix", p)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(p.payload), &cfg); err != nil {
+		t.Fatalf("discovery payload is not JSON: %v", err)
+	}
+	if cfg["state_topic"] != "doorbell/human" || cfg["device_class"] != "motion" || cfg["unique_id"] != "companion_human" {
+		t.Errorf("human discovery config = %v, want the human topic wired as a motion event", cfg)
+	}
+}
+
 func TestPublishDiscoveryDisabledByDefault(t *testing.T) {
 	c, f := newTestClient(true)
 	c.publishDiscovery()
@@ -134,7 +167,7 @@ func TestPublishDiscoveryDisabledByDefault(t *testing.T) {
 
 func TestProcessQueueDrainsQueuedEventAtShutdown(t *testing.T) {
 	c, f := newTestClient(true)
-	c.Publish("")
+	c.Publish("doorbell/pressed", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	c.ProcessQueue(ctx)
@@ -145,7 +178,7 @@ func TestProcessQueueDrainsQueuedEventAtShutdown(t *testing.T) {
 
 func TestDrainDropsWhenBrokerUnreachable(t *testing.T) {
 	c, f := newTestClient(false)
-	c.Publish("")
+	c.Publish("doorbell/pressed", "")
 	done := make(chan struct{})
 	go func() {
 		c.drain()
@@ -169,7 +202,7 @@ func TestDeliverWakesOnReconnect(t *testing.T) {
 		f.connected.Store(true)
 		c.reconnected <- struct{}{}
 	}()
-	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	c.deliver(context.Background(), event{topic: "doorbell/pressed", payload: "", received: time.Now()})
 	if len(f.published) != 1 {
 		t.Fatalf("published %d messages, want 1", len(f.published))
 	}
@@ -190,7 +223,7 @@ func TestRepublishAvailabilityAnnouncesLastState(t *testing.T) {
 func TestDeliverGivesUpOnUnackedPublish(t *testing.T) {
 	c, f := newTestClient(true)
 	f.token.timedOut = true
-	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	c.deliver(context.Background(), event{topic: "doorbell/pressed", payload: "", received: time.Now()})
 	if len(f.published) != 1 {
 		t.Errorf("publish attempts = %d, want exactly 1 (no retry loop)", len(f.published))
 	}
@@ -198,7 +231,7 @@ func TestDeliverGivesUpOnUnackedPublish(t *testing.T) {
 
 func TestDeliverDropsStaleEvent(t *testing.T) {
 	c, f := newTestClient(true)
-	stale := event{payload: "", received: time.Now().Add(-maxEventAge - time.Second)}
+	stale := event{topic: "doorbell/pressed", payload: "", received: time.Now().Add(-maxEventAge - time.Second)}
 	c.deliver(context.Background(), stale)
 	if len(f.published) != 0 {
 		t.Errorf("published %d messages, want 0", len(f.published))
@@ -207,7 +240,7 @@ func TestDeliverDropsStaleEvent(t *testing.T) {
 
 func TestDeliverDropsStaleEventWhileDisconnected(t *testing.T) {
 	c, f := newTestClient(false)
-	stale := event{payload: "", received: time.Now().Add(-maxEventAge - time.Second)}
+	stale := event{topic: "doorbell/pressed", payload: "", received: time.Now().Add(-maxEventAge - time.Second)}
 	done := make(chan struct{})
 	go func() {
 		c.deliver(context.Background(), stale)
@@ -227,7 +260,7 @@ func TestDeliverStopsOnShutdown(t *testing.T) {
 	c, f := newTestClient(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.deliver(ctx, event{payload: "", received: time.Now()})
+	c.deliver(ctx, event{topic: "doorbell/pressed", payload: "", received: time.Now()})
 	if len(f.published) != 0 {
 		t.Errorf("published %d messages, want 0", len(f.published))
 	}
@@ -239,7 +272,7 @@ func TestDeliverWaitsForReconnect(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		f.connected.Store(true)
 	}()
-	c.deliver(context.Background(), event{payload: "", received: time.Now()})
+	c.deliver(context.Background(), event{topic: "doorbell/pressed", payload: "", received: time.Now()})
 	if len(f.published) != 1 {
 		t.Errorf("published %d messages, want 1", len(f.published))
 	}
