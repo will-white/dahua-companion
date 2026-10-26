@@ -15,7 +15,7 @@ TO=${2:?usage: release-notes.sh <from-tag> <to-ref> [version]}
 VERSION=${3:-}
 REPO_URL=${REPO_URL:-https://github.com/will-white/dahua-companion}
 IMAGE=${IMAGE:-ghcr.io/will-white/dahua-companion}
-SHIPPED_PATHS=(main.go pkg go.mod go.sum Dockerfile .dockerignore)
+SHIPPED_PATHS=(main.go capture.go pkg go.mod go.sum Dockerfile .dockerignore)
 
 # Fail loudly on a bad ref: git log runs inside a process substitution below,
 # where its failure would otherwise just produce empty notes.

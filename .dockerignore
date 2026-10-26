@@ -3,6 +3,7 @@
 
 # Allow files and directories
 !/main.go
+!/capture.go
 !/go.mod
 !/go.sum
 !/pkg/

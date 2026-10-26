@@ -36,7 +36,7 @@ fi
 # Only artifact-affecting changes warrant a release: gate on the paths that
 # reach the shipped image. CI, docs, and devcontainer churn stays silent.
 # (Skipped before the first tag - everything counts for the first release.)
-SHIPPED_PATHS=(main.go pkg go.mod go.sum Dockerfile .dockerignore)
+SHIPPED_PATHS=(main.go capture.go pkg go.mod go.sum Dockerfile .dockerignore)
 FILTER=()
 if [ "$LATEST_TAG" != "v0.0.0" ]; then
     if [ -z "$(git diff --name-only "$LATEST_TAG..HEAD" -- "${SHIPPED_PATHS[@]}")" ]; then

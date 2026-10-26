@@ -129,45 +129,20 @@ func loadSecretFiles() {
 }
 
 func Load() *Config {
-	// The .env files are optional local overrides; a missing file is fine.
-	_ = godotenv.Load(".env.local")
-	_ = godotenv.Load()
-
-	loadSecretFiles()
+	loadEnv()
 
 	var c Config
 	err := envconfig.Process("", &c)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to process config")
 	}
+	finishDahua(&c.Dahua)
 
-	// Deprecated fallback for deployments configured before the DAHUA_ prefix.
-	if c.Dahua.Username == "" {
-		if legacy := os.Getenv("USERNAME"); legacy != "" {
-			log.Warn().Msg("USERNAME is deprecated and will be removed in a future release; set DAHUA_USERNAME")
-			c.Dahua.Username = legacy
-		}
-	}
-	if c.Dahua.Password == "" {
-		if legacy := os.Getenv("PASSWORD"); legacy != "" {
-			log.Warn().Msg("PASSWORD is deprecated and will be removed in a future release; set DAHUA_PASSWORD")
-			c.Dahua.Password = legacy
-		}
-	}
 	if c.Mqtt.PayloadFormat != PayloadEmpty && c.Mqtt.PayloadFormat != PayloadJSON {
 		log.Fatal().Str("format", c.Mqtt.PayloadFormat).Msg("MQTT_PAYLOAD_FORMAT must be empty or json")
 	}
 	if c.Mqtt.SnapshotSource != SnapshotFromRequest && c.Mqtt.SnapshotSource != SnapshotFromEvent {
 		log.Fatal().Str("source", c.Mqtt.SnapshotSource).Msg("SNAPSHOT_SOURCE must be request or event")
-	}
-	if c.Dahua.Scheme != SchemeHTTP && c.Dahua.Scheme != SchemeHTTPS {
-		log.Fatal().Str("scheme", c.Dahua.Scheme).Msg("DAHUA_SCHEME must be http or https")
-	}
-	if c.Dahua.Scheme == SchemeHTTP && (c.Dahua.CAFile != "" || c.Dahua.TLSInsecure) {
-		log.Warn().Msg("DAHUA_CA_FILE / DAHUA_TLS_INSECURE have no effect unless DAHUA_SCHEME=https")
-	}
-	if c.Dahua.TLSInsecure && c.Dahua.CAFile != "" {
-		log.Warn().Msg("DAHUA_TLS_INSECURE skips verification, so DAHUA_CA_FILE is ignored")
 	}
 	for i, event := range c.Mqtt.Snapshot {
 		event = strings.TrimSpace(event)
@@ -179,9 +154,59 @@ func Load() *Config {
 			log.Fatal().Msg("SNAPSHOT includes human but human detection is disabled (MQTT_HUMAN_TOPIC is empty)")
 		}
 	}
-	if c.Dahua.Username == "" || c.Dahua.Password == "" {
-		log.Fatal().Msg("DAHUA_USERNAME and DAHUA_PASSWORD are required")
-	}
 
 	return &c
+}
+
+// LoadCamera loads only the camera settings, for tools such as -capture that
+// talk to the camera without needing an MQTT broker configured.
+func LoadCamera() *Dahua {
+	loadEnv()
+
+	var d Dahua
+	if err := envconfig.Process("", &d); err != nil {
+		log.Fatal().Err(err).Msg("Failed to process camera config")
+	}
+	finishDahua(&d)
+	return &d
+}
+
+// loadEnv layers the optional .env files and _FILE secrets under the real
+// environment.
+func loadEnv() {
+	// The .env files are optional local overrides; a missing file is fine.
+	_ = godotenv.Load(".env.local")
+	_ = godotenv.Load()
+
+	loadSecretFiles()
+}
+
+// finishDahua applies the legacy credential fallback and validates the
+// camera settings.
+func finishDahua(d *Dahua) {
+	// Deprecated fallback for deployments configured before the DAHUA_ prefix.
+	if d.Username == "" {
+		if legacy := os.Getenv("USERNAME"); legacy != "" {
+			log.Warn().Msg("USERNAME is deprecated and will be removed in a future release; set DAHUA_USERNAME")
+			d.Username = legacy
+		}
+	}
+	if d.Password == "" {
+		if legacy := os.Getenv("PASSWORD"); legacy != "" {
+			log.Warn().Msg("PASSWORD is deprecated and will be removed in a future release; set DAHUA_PASSWORD")
+			d.Password = legacy
+		}
+	}
+	if d.Scheme != SchemeHTTP && d.Scheme != SchemeHTTPS {
+		log.Fatal().Str("scheme", d.Scheme).Msg("DAHUA_SCHEME must be http or https")
+	}
+	if d.Scheme == SchemeHTTP && (d.CAFile != "" || d.TLSInsecure) {
+		log.Warn().Msg("DAHUA_CA_FILE / DAHUA_TLS_INSECURE have no effect unless DAHUA_SCHEME=https")
+	}
+	if d.TLSInsecure && d.CAFile != "" {
+		log.Warn().Msg("DAHUA_TLS_INSECURE skips verification, so DAHUA_CA_FILE is ignored")
+	}
+	if d.Username == "" || d.Password == "" {
+		log.Fatal().Msg("DAHUA_USERNAME and DAHUA_PASSWORD are required")
+	}
 }

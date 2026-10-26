@@ -24,9 +24,16 @@ import (
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "probe the local /health endpoint and exit; used by the Docker HEALTHCHECK")
+	capture := flag.Duration("capture", 0, "record the camera's raw event stream for this long (e.g. 2m) to files, then exit; needs only the camera settings")
+	captureSnapshots := flag.Bool("capture-snapshots", false, "with -capture, also record the event-snapshot stream (contains pictures of the doorway)")
+	captureDir := flag.String("capture-dir", ".", "with -capture, the directory to write recordings to")
 	flag.Parse()
 	if *healthcheck {
 		os.Exit(runHealthcheck())
+	}
+	if *capture > 0 {
+		logger.Init()
+		os.Exit(runCapture(config.LoadCamera(), *capture, *captureDir, *captureSnapshots, os.Stderr))
 	}
 
 	logger.Init()
