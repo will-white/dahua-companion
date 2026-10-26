@@ -261,6 +261,26 @@ func TestListenSubscribesDoorbellOnlyByDefault(t *testing.T) {
 	}
 }
 
+func TestListenSurvivesLongLine(t *testing.T) {
+	// A line past bufio's 64 KB default used to be a fatal scan error that
+	// reconnecting could never get past.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Code=VideoMotion;action=Start;index=0;data={"+strings.Repeat("x", 200<<10)+"\r\n")
+		fmt.Fprint(w, "Code=AlarmLocal;action=Start;index=0\r\n")
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	events := 0
+	err := c.listen(context.Background(), backoff.NewExponentialBackOff(), func(Event) { events++ })
+	if err == nil || err.Error() != "event stream ended" {
+		t.Errorf("listen() = %v, want a clean stream end", err)
+	}
+	if events != 1 {
+		t.Errorf("events = %d, want the press after the long line", events)
+	}
+}
+
 func TestListenNonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

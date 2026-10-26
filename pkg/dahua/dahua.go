@@ -115,6 +115,13 @@ func (c *Client) Probe(ctx context.Context) error {
 // the cap only keeps a misbehaving camera from ballooning memory.
 const maxSnapshotBytes = 5 << 20
 
+// maxLineBytes is the longest event stream line the scanner accepts. The
+// bufio default of 64 KB is plenty for event lines, but a line past it is a
+// fatal scan error - and since the camera would resend the same oversized
+// line, the stream would reconnect forever. Lines are never buffered beyond
+// their own length, so the high cap costs nothing in the normal case.
+const maxLineBytes = 1 << 20
+
 // Snapshot fetches a JPEG from the camera for an event's channel (the event
 // index, 0-based; the API counts video channels from 1). Callers bound it with
 // a context deadline, since the client itself has no timeout.
@@ -205,6 +212,7 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	bo.Reset()
 
 	scanner := bufio.NewScanner(&watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout})
+	scanner.Buffer(make([]byte, 0, 4096), maxLineBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 		ev, ok := parseEvent(line)

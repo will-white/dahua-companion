@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -13,11 +14,24 @@ import (
 // no client-wide timeout because of the long-poll event stream.
 const probeTimeout = 5 * time.Second
 
+// probeCacheTTL is how long a successful camera probe is trusted. The event
+// stream's own watchdog notices a dead camera within seconds, so re-probing on
+// every request (Docker alone checks every 30s, monitors often more) only adds
+// authenticated load on the camera. Failures are never cached, so recovery
+// shows up on the next request.
+const probeCacheTTL = 60 * time.Second
+
 type Server struct {
 	server         *http.Server
 	mqttConnected  func() bool
 	dahuaConnected func() bool
 	probe          func(context.Context) error
+
+	// probeMu serializes probes, so concurrent health requests share one
+	// camera round trip, and guards lastProbeOK.
+	probeMu     sync.Mutex
+	lastProbeOK time.Time
+	probeTTL    time.Duration
 }
 
 // New builds the health server. mqttConnected and dahuaConnected report the
@@ -34,6 +48,7 @@ func New(addr string, mqttConnected, dahuaConnected func() bool, probe func(cont
 		mqttConnected:  mqttConnected,
 		dahuaConnected: dahuaConnected,
 		probe:          probe,
+		probeTTL:       probeCacheTTL,
 	}
 	mux.HandleFunc("/health", s.healthCheckHandler)
 	return s
@@ -51,6 +66,22 @@ func (s *Server) Start() {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
+}
+
+// probeCamera runs the live camera probe unless one succeeded within
+// probeTTL.
+func (s *Server) probeCamera(ctx context.Context) error {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	if !s.lastProbeOK.IsZero() && time.Since(s.lastProbeOK) < s.probeTTL {
+		return nil
+	}
+	if err := s.probe(ctx); err != nil {
+		s.lastProbeOK = time.Time{}
+		return err
+	}
+	s.lastProbeOK = time.Now()
+	return nil
 }
 
 func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +102,7 @@ func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	doorbellStatus := "okay"
 	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 	defer cancel()
-	if err := s.probe(ctx); err != nil {
+	if err := s.probeCamera(ctx); err != nil {
 		log.Error().Err(err).Msg("Camera probe failed")
 		doorbellStatus = "unreachable"
 		statusCode = http.StatusServiceUnavailable
