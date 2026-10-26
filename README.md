@@ -29,7 +29,7 @@ This project also has wrappers around the HTTP subscription and MQTT broker to a
 
 Set `SNAPSHOT=press,human` (or just one of them) and each event is followed by a JPEG still from the camera on `<event topic>/snapshot` — `doorbell/pressed/snapshot` and `doorbell/human/snapshot` by default. With discovery, Home Assistant gets two image entities, **Last ring** and **Last person**, so a ring's picture is never overwritten by someone walking past afterwards.
 
-The event itself is published first and never waits on the camera; the still follows about a second later, so the person may have moved slightly. Only one snapshot is fetched at a time: while one is in flight further detections get none, but a press takes over from a detection's fetch. Peak memory stays around one image (≈100–400 KB) however busy the doorway, and snapshots are never retained on the broker or held for a reconnect — if the broker is down, the still is dropped.
+The event itself is published first and never waits on the camera. By default (`SNAPSHOT_SOURCE=request`) the still is fetched right after the event, about a second later, so the person may have moved slightly. `SNAPSHOT_SOURCE=event` instead opens the camera's event-snapshot stream, which pushes the still the camera captured *at the moment of* the event — better timing, but not every camera firmware supports it (if yours doesn't, the log shows the stream failing to connect; switch back to `request`). In that mode a still can occasionally arrive just before its event. Only one snapshot is fetched at a time: while one is in flight further detections get none, but a press takes over from a detection's fetch. Peak memory stays around one image (≈100–400 KB) however busy the doorway, and snapshots are never retained on the broker or held for a reconnect — if the broker is down, the still is dropped.
 
 Availability is published retained on `doorbell/availability` (`online`/`offline`): it goes `offline` when the camera stream drops and an MQTT Last Will covers the process dying outright, so your automation can tell you the doorbell is *down* instead of just going quiet. Point your Home Assistant entity/trigger availability at that topic.
 
@@ -78,6 +78,7 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |
 | `MQTT_PAYLOAD_FORMAT` | no | `empty` (default) or `json` — see above |
 | `HUMAN_COOLDOWN` | no | minimum gap between published human detections, defaults to `10s`; `0` publishes every one |
+| `SNAPSHOT_SOURCE` | no | `request` (default: fetch a still right after the event) or `event` (the camera's own still from the moment of the event, if supported) |
 | `SNAPSHOT` | no | comma-separated events that also publish a camera still: `press`, `human`, or both; empty (default) disables |
 | `LOG_LEVEL` | no | `info` (default), `debug`, `warn`, … — `debug` logs every camera stream line the app doesn't handle, useful for supporting a new camera model |
 | `APP_ENV` | no | `development` switches to human-readable console logs |

@@ -209,20 +209,29 @@ func (c *Client) Snapshot(ctx context.Context, channel int) ([]byte, error) {
 // exponential backoff and calling onEvent for every doorbell press (and human
 // detection, when DetectHumans is set).
 func (c *Client) Listen(ctx context.Context, onEvent func(Event)) {
+	retryStream(ctx, "event stream", func(bo *backoff.ExponentialBackOff) error {
+		err := c.listen(ctx, bo, onEvent)
+		if err != nil && ctx.Err() == nil {
+			metrics.CameraFailures.Inc()
+		}
+		return err
+	})
+}
+
+// retryStream runs attempt until ctx is cancelled, reconnecting with
+// exponential backoff. attempt resets the backoff once it connects, so only
+// consecutive failures grow the delay.
+func retryStream(ctx context.Context, name string, attempt func(*backoff.ExponentialBackOff) error) {
 	bo := backoff.NewExponentialBackOff()
 	// The default 60s ceiling would grow the blind window during a long camera
 	// outage; attempts against a LAN camera are cheap, so retry at least every
 	// 10s.
 	bo.MaxInterval = 10 * time.Second
 	_, err := backoff.Retry(ctx, func() (struct{}, error) {
-		err := c.listen(ctx, bo, onEvent)
-		if err != nil && ctx.Err() == nil {
-			metrics.CameraFailures.Inc()
-		}
-		return struct{}{}, err
+		return struct{}{}, attempt(bo)
 	}, backoff.WithBackOff(bo), backoff.WithMaxElapsedTime(0))
 	if err != nil && ctx.Err() == nil {
-		log.Error().Err(err).Msg("Dahua listen retry loop failed")
+		log.Error().Err(err).Str("stream", name).Msg("Dahua stream retry loop failed")
 	}
 }
 
@@ -234,7 +243,16 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 		codes += ",SmartMotionHuman,CrossLineDetection,CrossRegionDetection"
 	}
 	url := c.url(fmt.Sprintf("/cgi-bin/eventManager.cgi?action=attach&codes=[%s]&heartbeat=%d", codes, heartbeatSeconds))
+	return c.stream(ctx, bo, "event stream", url, true, func(body io.Reader, _ string) error {
+		return c.scanEvents(body, onEvent)
+	})
+}
 
+// stream runs one long-poll connection to url: it requests it under the idle
+// watchdog and, once the camera answers 200, hands the body (read through the
+// watchdog) to consume. track marks the connection in IsConnected and
+// OnConnectionChange. It always returns an error: the stream ending is one.
+func (c *Client) stream(ctx context.Context, bo *backoff.ExponentialBackOff, name, url string, track bool, consume func(body io.Reader, contentType string) error) error {
 	// The camera speaks at least every heartbeatSeconds, so a silent stream
 	// means the connection died underneath us (camera reboot, network drop)
 	// even though the socket looks open - OS TCP keepalives take minutes to
@@ -253,24 +271,35 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	}
 	resp, err := c.HttpClient.Do(req)
 	if err != nil {
-		return c.streamErr(ctx, streamCtx, err, "Error fetching http stream")
+		return c.streamErr(ctx, streamCtx, err, name, "Error fetching http stream")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Error().Int("status_code", resp.StatusCode).Msg("Received non-OK HTTP status")
+		log.Error().Str("stream", name).Int("status_code", resp.StatusCode).Msg("Received non-OK HTTP status")
 		return fmt.Errorf("received non-OK HTTP status: %d", resp.StatusCode)
 	}
 
-	log.Info().Msg("Connected to HTTP stream and listening for events")
-	metrics.CameraConnects.Inc()
-	c.setConnected(true)
-	defer c.setConnected(false)
+	log.Info().Str("stream", name).Msg("Connected to HTTP stream and listening for events")
+	if track {
+		metrics.CameraConnects.Inc()
+		c.setConnected(true)
+		defer c.setConnected(false)
+	}
 	// The camera is reachable again: only consecutive failures should grow the
 	// retry delay, so start the next reconnect from the shortest interval.
 	bo.Reset()
 
-	scanner := bufio.NewScanner(&watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout})
+	body := &watchdogReader{r: resp.Body, timer: watchdog, timeout: c.idleTimeout}
+	if err := consume(body, resp.Header.Get("Content-Type")); err != nil {
+		return c.streamErr(ctx, streamCtx, err, name, "Error reading the stream")
+	}
+	return fmt.Errorf("%s ended", name)
+}
+
+// scanEvents reads event lines from the event stream body until it ends.
+func (c *Client) scanEvents(body io.Reader, onEvent func(Event)) error {
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 4096), maxLineBytes)
 	var block *ivsBlock // an IVS event whose data block is still arriving
 	for scanner.Scan() {
@@ -307,10 +336,7 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 		}
 		c.report(ev, onEvent)
 	}
-	if err := scanner.Err(); err != nil {
-		return c.streamErr(ctx, streamCtx, err, "Error reading the stream")
-	}
-	return fmt.Errorf("event stream ended")
+	return scanner.Err()
 }
 
 // report applies the human cooldown and hands ev to onEvent.
@@ -339,10 +365,16 @@ func (c *Client) reportIVS(b *ivsBlock, onEvent func(Event)) {
 // humanCoolingDown reports whether a human detection at now falls within
 // HumanCooldown of the last reported one, recording now when it does not.
 func (c *Client) humanCoolingDown(now time.Time) bool {
-	if c.HumanCooldown > 0 && !c.lastHuman.IsZero() && now.Sub(c.lastHuman) < c.HumanCooldown {
+	return coolingDown(c.HumanCooldown, &c.lastHuman, now)
+}
+
+// coolingDown reports whether now falls within window of *last, recording now
+// in *last when it does not (so suppressed events never extend the window).
+func coolingDown(window time.Duration, last *time.Time, now time.Time) bool {
+	if window > 0 && !last.IsZero() && now.Sub(*last) < window {
 		return true
 	}
-	c.lastHuman = now
+	*last = now
 	return false
 }
 
@@ -369,14 +401,14 @@ func (c *Client) setConnected(up bool) {
 
 // streamErr logs and returns err, naming the idle watchdog when it is what
 // killed the stream. Shutdown cancellation stays quiet.
-func (c *Client) streamErr(ctx, streamCtx context.Context, err error, msg string) error {
+func (c *Client) streamErr(ctx, streamCtx context.Context, err error, name, msg string) error {
 	if ctx.Err() != nil {
 		return err
 	}
 	if streamCtx.Err() != nil {
 		err = fmt.Errorf("no data from camera in %s: %w", c.idleTimeout, err)
 	}
-	log.Error().Err(err).Msg(msg)
+	log.Error().Err(err).Str("stream", name).Msg(msg)
 	return err
 }
 
