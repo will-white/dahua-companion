@@ -3,9 +3,12 @@ package dahua
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -75,16 +78,55 @@ type Client struct {
 	connected   atomic.Bool
 }
 
-func New(cfg *config.Dahua) *Client {
+// New builds a camera client. It fails only on an unusable TLS setup (an
+// unreadable or invalid DAHUA_CA_FILE).
+func New(cfg *config.Dahua) (*Client, error) {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.Scheme == config.SchemeHTTPS {
+		tlsConfig, err := cameraTLSConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		base.TLSClientConfig = tlsConfig
+	}
 	// No client-wide timeout: the event stream is a long-poll that stays open
 	// indefinitely. Bounded requests pass their own context deadline.
 	httpClient := &http.Client{
 		Transport: &digest.Transport{
-			Username: cfg.Username,
-			Password: cfg.Password,
+			Username:  cfg.Username,
+			Password:  cfg.Password,
+			Transport: base,
 		},
 	}
-	return &Client{HttpClient: httpClient, Cfg: cfg, idleTimeout: streamIdleTimeout}
+	return &Client{HttpClient: httpClient, Cfg: cfg, idleTimeout: streamIdleTimeout}, nil
+}
+
+// cameraTLSConfig verifies the camera against DAHUA_CA_FILE when set (the
+// usual way to trust a camera's self-signed certificate), the system roots
+// otherwise, or not at all with DAHUA_TLS_INSECURE.
+func cameraTLSConfig(cfg *config.Dahua) (*tls.Config, error) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if cfg.TLSInsecure {
+		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicit opt-in for self-signed camera certificates
+		return tlsConfig, nil
+	}
+	if cfg.CAFile != "" {
+		pem, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading DAHUA_CA_FILE: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("DAHUA_CA_FILE %s holds no PEM certificates", cfg.CAFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+	return tlsConfig, nil
+}
+
+// url builds a camera API URL for path (which includes its query).
+func (c *Client) url(path string) string {
+	return c.Cfg.Scheme + "://" + c.Cfg.Host + path
 }
 
 // IsConnected reports whether the event stream is currently established.
@@ -94,7 +136,7 @@ func (c *Client) IsConnected() bool {
 
 // Probe makes a cheap read-only authenticated request against the camera.
 func (c *Client) Probe(ctx context.Context) error {
-	url := fmt.Sprintf("http://%s/cgi-bin/magicBox.cgi?action=getMachineName", c.Cfg.Host)
+	url := c.url("/cgi-bin/magicBox.cgi?action=getMachineName")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -126,7 +168,7 @@ const maxLineBytes = 1 << 20
 // index, 0-based; the API counts video channels from 1). Callers bound it with
 // a context deadline, since the client itself has no timeout.
 func (c *Client) Snapshot(ctx context.Context, channel int) ([]byte, error) {
-	url := fmt.Sprintf("http://%s/cgi-bin/snapshot.cgi?channel=%d", c.Cfg.Host, channel+1)
+	url := c.url(fmt.Sprintf("/cgi-bin/snapshot.cgi?channel=%d", channel+1))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -175,7 +217,7 @@ func (c *Client) listen(ctx context.Context, bo *backoff.ExponentialBackOff, onE
 	if c.DetectHumans {
 		codes += ",SmartMotionHuman"
 	}
-	url := fmt.Sprintf("http://%s/cgi-bin/eventManager.cgi?action=attach&codes=[%s]&heartbeat=%d", c.Cfg.Host, codes, heartbeatSeconds)
+	url := c.url(fmt.Sprintf("/cgi-bin/eventManager.cgi?action=attach&codes=[%s]&heartbeat=%d", codes, heartbeatSeconds))
 
 	// The camera speaks at least every heartbeatSeconds, so a silent stream
 	// means the connection died underneath us (camera reboot, network drop)

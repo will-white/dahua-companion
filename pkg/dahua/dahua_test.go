@@ -3,10 +3,12 @@ package dahua
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -129,11 +131,51 @@ func TestParseEvent(t *testing.T) {
 }
 
 func testClient(serverURL string) *Client {
-	return New(&config.Dahua{
-		Host:     strings.TrimPrefix(serverURL, "http://"),
-		Username: "admin",
-		Password: "secret",
-	})
+	return testClientWith(serverURL, config.Dahua{})
+}
+
+// testClientWith builds a client for serverURL, taking scheme and host from
+// it and any TLS settings from cfg.
+func testClientWith(serverURL string, cfg config.Dahua) *Client {
+	scheme, host, _ := strings.Cut(serverURL, "://")
+	cfg.Scheme, cfg.Host = scheme, host
+	cfg.Username, cfg.Password = "admin", "secret"
+	c, err := New(&cfg)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+func TestHTTPS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "name=Doorbell")
+	}))
+	defer srv.Close()
+
+	// The test server's certificate is self-signed, like a camera's.
+	if err := testClient(srv.URL).Probe(context.Background()); err == nil {
+		t.Error("Probe() succeeded against an unverified self-signed certificate")
+	}
+
+	caFile := filepath.Join(t.TempDir(), "camera.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(caFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := testClientWith(srv.URL, config.Dahua{CAFile: caFile}).Probe(context.Background()); err != nil {
+		t.Errorf("Probe() with DAHUA_CA_FILE = %v, want success", err)
+	}
+	if err := testClientWith(srv.URL, config.Dahua{TLSInsecure: true}).Probe(context.Background()); err != nil {
+		t.Errorf("Probe() with DAHUA_TLS_INSECURE = %v, want success", err)
+	}
+
+	if err := os.WriteFile(caFile, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(&config.Dahua{Scheme: config.SchemeHTTPS, CAFile: caFile}); err == nil {
+		t.Error("New() accepted a CA file with no certificates")
+	}
 }
 
 func TestListenStream(t *testing.T) {

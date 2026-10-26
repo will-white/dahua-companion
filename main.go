@@ -32,7 +32,10 @@ func main() {
 	cfg := config.Load()
 
 	mqttClient := mqtt.New(&cfg.Mqtt)
-	dahuaClient := dahua.New(&cfg.Dahua)
+	dahuaClient, err := dahua.New(&cfg.Dahua)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to set up the camera client")
+	}
 	// Availability mirrors the event stream: no stream, no doorbell.
 	dahuaClient.OnConnectionChange = mqttClient.PublishAvailability
 	dahuaClient.DetectHumans = cfg.Mqtt.HumanTopic != ""
