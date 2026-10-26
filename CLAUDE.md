@@ -31,7 +31,7 @@ docker run --rm -v "$PWD":/app -w /app golangci/golangci-lint:v2.12.2 golangci-l
 
 ```bash
 docker run --rm -v "$PWD":/app -w /app -v dahua-gomodcache:/go/pkg/mod \
-  -e GOFLAGS=-buildvcs=false golang:1.26.5 \
+  -e GOFLAGS=-buildvcs=false golang:1.26.10 \
   sh -c 'go build ./... && go vet ./... && gofmt -l . && go test -race ./...'
 ```
 
