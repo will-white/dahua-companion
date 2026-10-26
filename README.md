@@ -35,7 +35,7 @@ Availability is published retained on `doorbell/availability` (`online`/`offline
 
 Set `MQTT_DISCOVERY_PREFIX=homeassistant` and the doorbell announces itself via [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery): Home Assistant auto-creates a device with a doorbell **Event entity** (plus a motion Event entity for human detection), events and availability already wired — no YAML needed.
 
-A `/health` endpoint (port `8080` by default) returns 200 only when the MQTT connection is up, the event stream is attached, and the camera answers a live read-only probe.
+A `/health` endpoint (port `8080` by default) returns 200 only when the MQTT connection is up, the event stream is attached, and the camera answers a live read-only probe. A successful probe is reused for 60 seconds so frequent health checks don't load the camera; a failure is re-probed every time.
 
 ## Running it
 
@@ -69,12 +69,14 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `MQTT_DISCOVERY_PREFIX` | no | set to `homeassistant` to enable HA MQTT discovery; empty (default) disables it |
 | `HOSTNAME_OR_IP` | yes | camera hostname or IP |
 | `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
+| `*_FILE` | no | `MQTT_USERNAME_FILE`, `MQTT_PASSWORD_FILE`, `DAHUA_USERNAME_FILE`, `DAHUA_PASSWORD_FILE`: read the value from a file instead, e.g. a Docker secret under `/run/secrets/` (a trailing newline is ignored; the plain variable wins if both are set) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |
 | `MQTT_PAYLOAD_FORMAT` | no | `empty` (default) or `json` — see above |
 | `HUMAN_COOLDOWN` | no | minimum gap between published human detections, defaults to `10s`; `0` publishes every one |
 | `SNAPSHOT` | no | comma-separated events that also publish a camera still: `press`, `human`, or both; empty (default) disables |
 | `LOG_LEVEL` | no | `info` (default), `debug`, `warn`, … — `debug` logs every camera stream line the app doesn't handle, useful for supporting a new camera model |
 | `APP_ENV` | no | `development` switches to human-readable console logs |
+| `GOMEMLIMIT` | no | standard Go runtime soft memory limit (e.g. `32MiB`) for very small hosts; the app idles at ~10–15 MB |
 
 ## Home Assistant Example
 

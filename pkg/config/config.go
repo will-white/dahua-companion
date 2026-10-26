@@ -76,10 +76,41 @@ type Config struct {
 	HealthPort string `envconfig:"HEALTH_PORT" default:"8080"`
 }
 
+// secretVars may instead be supplied as <NAME>_FILE, a path to a file holding
+// the value (Docker/compose secrets mount them under /run/secrets).
+var secretVars = []string{"MQTT_USERNAME", "MQTT_PASSWORD", "DAHUA_USERNAME", "DAHUA_PASSWORD"}
+
+// loadSecretFiles sets each secret variable from its _FILE counterpart. A
+// directly set variable wins, matching the "real environment wins" layering;
+// setting both is reported since one of them is being ignored.
+func loadSecretFiles() {
+	for _, name := range secretVars {
+		path := os.Getenv(name + "_FILE")
+		if path == "" {
+			continue
+		}
+		if _, set := os.LookupEnv(name); set {
+			log.Warn().Str("var", name).Msg("Both " + name + " and " + name + "_FILE are set; using " + name)
+			continue
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			log.Fatal().Err(err).Str("var", name+"_FILE").Msg("Failed to read secret file")
+		}
+		// Editors and `echo` add a trailing newline that is never part of
+		// the secret.
+		if err := os.Setenv(name, strings.TrimRight(string(b), "\r\n")); err != nil {
+			log.Fatal().Err(err).Str("var", name).Msg("Failed to set secret from file")
+		}
+	}
+}
+
 func Load() *Config {
 	// The .env files are optional local overrides; a missing file is fine.
 	_ = godotenv.Load(".env.local")
 	_ = godotenv.Load()
+
+	loadSecretFiles()
 
 	var c Config
 	err := envconfig.Process("", &c)

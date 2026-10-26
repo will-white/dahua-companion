@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -91,5 +92,39 @@ func TestProbeGetsBoundedContext(t *testing.T) {
 	s.healthCheckHandler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if !deadlineSet {
 		t.Error("probe context has no deadline")
+	}
+}
+
+func TestProbeCache(t *testing.T) {
+	calls := 0
+	var probeErr error
+	s := New(":0", func() bool { return true }, func() bool { return true }, func(context.Context) error {
+		calls++
+		return probeErr
+	})
+	get := func() int {
+		rec := httptest.NewRecorder()
+		s.healthCheckHandler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		return rec.Code
+	}
+
+	get()
+	get()
+	if calls != 1 {
+		t.Errorf("probe calls = %d, want 1: a fresh success should be reused", calls)
+	}
+
+	s.lastProbeOK = time.Now().Add(-2 * s.probeTTL) // the cached success expires
+	probeErr = errors.New("camera gone")
+	if code := get(); code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d after the cache expired on a dead camera, want 503", code)
+	}
+	if code := get(); code != http.StatusServiceUnavailable || calls != 3 {
+		t.Errorf("status = %d, probe calls = %d; want 503 and a fresh probe (failures are not cached)", code, calls)
+	}
+
+	probeErr = nil
+	if code := get(); code != http.StatusOK {
+		t.Errorf("status = %d after the camera recovered, want 200 immediately", code)
 	}
 }

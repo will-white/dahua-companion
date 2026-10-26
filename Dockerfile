@@ -17,7 +17,7 @@ COPY . .
 # Disables C dependencies for portability.
 ENV CGO_ENABLED=0
 # By using the build flags -s and -w, we remove the symbol table and DWARF debugging information, which shrinks the size of the binary.
-RUN go build -ldflags="-s -w" -o main .
+RUN go build -trimpath -ldflags="-s -w" -o main .
 
 RUN adduser -D scratchuser
 

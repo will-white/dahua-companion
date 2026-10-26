@@ -16,6 +16,7 @@ func clearAmbientEnv(t *testing.T) {
 		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_PAYLOAD_FORMAT", "HUMAN_COOLDOWN", "SNAPSHOT", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
 		"DAHUA_USERNAME", "DAHUA_PASSWORD",
 		"USERNAME", "PASSWORD", "HEALTH_PORT",
+		"MQTT_USERNAME_FILE", "MQTT_PASSWORD_FILE", "DAHUA_USERNAME_FILE", "DAHUA_PASSWORD_FILE",
 	}
 	for _, v := range vars {
 		if old, ok := os.LookupEnv(v); ok {
@@ -123,6 +124,35 @@ func TestSnapshotList(t *testing.T) {
 	}
 	if got := cfg.Mqtt.HumanSnapshotTopic(); got != "doorbell/human/snapshot" {
 		t.Errorf("HumanSnapshotTopic = %q", got)
+	}
+}
+
+func TestSecretFiles(t *testing.T) {
+	clearAmbientEnv(t)
+	t.Chdir(t.TempDir())
+	setRequiredEnv(t)
+	os.Unsetenv("MQTT_PASSWORD")
+	t.Setenv("DAHUA_USERNAME", "admin")
+	if err := os.WriteFile("dahua_pw", []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("mqtt_pw", []byte("mqtt-from-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DAHUA_PASSWORD_FILE", "dahua_pw")
+	t.Setenv("MQTT_PASSWORD_FILE", "mqtt_pw")
+	t.Setenv("MQTT_USERNAME_FILE", "mqtt_pw") // MQTT_USERNAME is set directly: it wins
+
+	cfg := Load()
+
+	if got := cfg.Dahua.Password; got != "from-file" {
+		t.Errorf("Dahua.Password = %q, want the file's value without its trailing newline", got)
+	}
+	if got := cfg.Mqtt.Password; got != "mqtt-from-file" {
+		t.Errorf("Mqtt.Password = %q, want the file's value", got)
+	}
+	if got := cfg.Mqtt.Username; got != "mqtt-user" {
+		t.Errorf("Mqtt.Username = %q, want the directly set variable to win over _FILE", got)
 	}
 }
 
