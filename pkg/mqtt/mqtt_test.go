@@ -24,10 +24,14 @@ func TestMain(m *testing.M) {
 type fakeToken struct {
 	err      error
 	timedOut bool
+	waited   atomic.Bool
 }
 
-func (t *fakeToken) Wait() bool                     { return true }
-func (t *fakeToken) WaitTimeout(time.Duration) bool { return !t.timedOut }
+func (t *fakeToken) Wait() bool { return true }
+func (t *fakeToken) WaitTimeout(time.Duration) bool {
+	t.waited.Store(true)
+	return !t.timedOut
+}
 func (t *fakeToken) Done() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)
@@ -50,6 +54,9 @@ type fakePaho struct {
 	mu        sync.Mutex // guards published for tests that publish from a goroutine
 	published []pub
 	token     fakeToken
+
+	disconnected          bool
+	disconnectedAfterWait bool
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.connected.Load() }
@@ -65,6 +72,12 @@ func (f *fakePaho) Publish(topic string, qos byte, retained bool, payload interf
 	}
 	f.published = append(f.published, pub{topic: topic, qos: qos, retained: retained, payload: s})
 	return &f.token
+}
+
+func (f *fakePaho) Disconnect(uint) {
+	// Record whether the last publish's ack had been waited for by now.
+	f.disconnectedAfterWait = f.token.waited.Load()
+	f.disconnected = true
 }
 
 func (f *fakePaho) count() int {
@@ -361,6 +374,26 @@ func TestDeliverDropsStaleEvent(t *testing.T) {
 	c.deliver(context.Background(), stale)
 	if len(f.published) != 0 {
 		t.Errorf("published %d messages, want 0", len(f.published))
+	}
+}
+
+func TestDisconnectWaitsForOfflineAck(t *testing.T) {
+	c, f := newTestClient(true)
+	c.Disconnect()
+	if len(f.published) != 1 || f.published[0].payload != "offline" || !f.published[0].retained {
+		t.Fatalf("published = %+v, want a retained offline", f.published)
+	}
+	if !f.disconnected || !f.disconnectedAfterWait {
+		t.Error("disconnected without waiting for the offline ack")
+	}
+
+	c, f = newTestClient(false)
+	c.Disconnect()
+	if f.token.waited.Load() {
+		t.Error("waited for an ack with no broker connection")
+	}
+	if !f.disconnected {
+		t.Error("Disconnect did not disconnect")
 	}
 }
 

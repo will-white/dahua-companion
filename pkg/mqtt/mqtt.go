@@ -436,9 +436,23 @@ func (c *Client) PublishSnapshot(topic string, img []byte) {
 }
 
 func (c *Client) Disconnect() {
-	// A clean disconnect suppresses the will, so leave "offline" explicitly;
-	// Disconnect's grace period lets it flush.
-	c.PublishAvailability(false)
+	// A clean disconnect suppresses the will, so leave "offline" explicitly -
+	// and wait for the broker's ack: paho's Disconnect quiesce does not wait
+	// for in-flight QoS 1 publishes, so without this the retained "offline"
+	// could be cut off (logged as "connection lost before Publish completed").
+	// QoS 1 acks arrive in order, so this also covers any earlier availability
+	// publish still in flight. With no connection there is nothing to wait for.
+	c.availabilityMu.Lock()
+	c.available = false
+	token := c.client.Publish(c.cfg.AvailabilityTopic, 1, true, "offline")
+	c.availabilityMu.Unlock()
+	if c.client.IsConnectionOpen() {
+		if !token.WaitTimeout(drainTimeout) {
+			log.Warn().Msg("Broker did not ack offline availability before disconnect")
+		} else if err := token.Error(); err != nil {
+			log.Warn().Err(err).Msg("Offline availability publish failed")
+		}
+	}
 	c.client.Disconnect(250)
 }
 
