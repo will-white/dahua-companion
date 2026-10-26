@@ -1,9 +1,9 @@
 #!/bin/bash
 # Fails if the Go version drifts between the three places it is declared:
 #
-#   go.mod                       toolchain go1.26.10       (full version)
-#   Dockerfile                   FROM golang:1.26.10-alpine (full version)
-#   .devcontainer/devcontainer.json  devcontainers/go:2-1.26-bookworm (minor only)
+#   go.mod                       toolchain go1.27.3        (full version)
+#   Dockerfile                   FROM golang:1.27.3-alpine  (full version)
+#   .devcontainer/devcontainer.json  devcontainers/go:2-1.27-bookworm (minor only)
 #
 # Renovate bumps these as three separate dependencies. The grouping rule in
 # renovate.json puts them in one PR, but nothing stops them landing apart or
