@@ -66,6 +66,13 @@ func main() {
 	fetchSnapshots := cfg.Mqtt.SnapshotSource == config.SnapshotFromRequest
 
 	var wg sync.WaitGroup
+	if cfg.Dahua.ForceOnline {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dahuaClient.KeepOnline(ctx, cfg.Dahua.ForceOnlineInterval)
+		}()
+	}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
