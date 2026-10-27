@@ -56,6 +56,10 @@ services:
 
 The image ships a `HEALTHCHECK` that probes `/health`. Note Docker only *marks* the container unhealthy — plain `docker run`/compose never restarts it for that. In-process reconnection already recovers from camera and broker outages on its own; if you also want automatic restarts on a wedged process, pair the healthcheck with [autoheal](https://github.com/willfarrell/docker-autoheal) or an orchestrator that acts on health status.
 
+## Keeping the light ring "online"
+
+If you keep the doorbell off the internet (firewalled from the Amcrest cloud, which is a reasonable privacy choice), it shows its "offline" pattern on the light ring. Set `DAHUA_FORCE_ONLINE=true` and the companion tells the camera every 30 seconds that its cloud connection is up (`VSP_PaaS.Online=true`, an undocumented setting), which keeps the ring in its normal state. The camera clears the setting on its own, which is why it is re-sent; `DAHUA_FORCE_ONLINE_INTERVAL` changes how often. Each attempt is counted in `dahua_companion_force_online_total`, and a camera that rejects the setting logs one warning rather than one per attempt.
+
 ## Capturing your camera's traffic
 
 Dahua and Amcrest models don't all report events the same way. To see exactly what yours sends — or to help add support for it — record its raw streams:
@@ -86,6 +90,8 @@ Configuration is via environment variables. A `.env` file in the working directo
 | `DAHUA_SCHEME` | no | `http` (default) or `https` for the camera API |
 | `DAHUA_CA_FILE` | no | with `https`: PEM file to verify the camera's certificate against (export the camera's self-signed certificate) instead of the system roots |
 | `DAHUA_TLS_INSECURE` | no | with `https`: `true` skips certificate verification — still encrypted, but not protected against impersonation on your network |
+| `DAHUA_FORCE_ONLINE` | no | `true` keeps telling the camera its cloud connection is up, so a doorbell kept off the internet doesn't show "offline" on its light ring (see above); off by default |
+| `DAHUA_FORCE_ONLINE_INTERVAL` | no | how often to re-send it, defaults to `30s` (minimum `5s`) |
 | `DAHUA_USERNAME` / `DAHUA_PASSWORD` | yes | camera credentials (legacy `USERNAME`/`PASSWORD` still work, with a deprecation warning) |
 | `*_FILE` | no | `MQTT_USERNAME_FILE`, `MQTT_PASSWORD_FILE`, `DAHUA_USERNAME_FILE`, `DAHUA_PASSWORD_FILE`: read the value from a file instead, e.g. a Docker secret under `/run/secrets/` (a trailing newline is ignored; the plain variable wins if both are set) |
 | `HEALTH_PORT` | no | `/health` listen port, defaults to `8080` |

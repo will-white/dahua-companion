@@ -91,7 +91,19 @@ type Dahua struct {
 	// HumanCooldown suppresses human detections that follow a published one
 	// within this window; 0 publishes every detection.
 	HumanCooldown time.Duration `envconfig:"HUMAN_COOLDOWN" default:"10s"`
+	// ForceOnline periodically tells the camera its vendor-cloud connection
+	// is up, so an Amcrest doorbell kept off the internet does not show the
+	// offline pattern on its light ring. Opt-in: it is an undocumented
+	// config write.
+	ForceOnline bool `envconfig:"DAHUA_FORCE_ONLINE"`
+	// ForceOnlineInterval is how often ForceOnline re-sends the setting (the
+	// camera clears it on its own).
+	ForceOnlineInterval time.Duration `envconfig:"DAHUA_FORCE_ONLINE_INTERVAL" default:"30s"`
 }
+
+// minForceOnlineInterval keeps DAHUA_FORCE_ONLINE from hammering the camera
+// with config writes.
+const minForceOnlineInterval = 5 * time.Second
 
 type Config struct {
 	Mqtt       Mqtt
@@ -208,5 +220,8 @@ func finishDahua(d *Dahua) {
 	}
 	if d.Username == "" || d.Password == "" {
 		log.Fatal().Msg("DAHUA_USERNAME and DAHUA_PASSWORD are required")
+	}
+	if d.ForceOnline && d.ForceOnlineInterval < minForceOnlineInterval {
+		log.Fatal().Dur("interval", d.ForceOnlineInterval).Msgf("DAHUA_FORCE_ONLINE_INTERVAL must be at least %s", minForceOnlineInterval)
 	}
 }

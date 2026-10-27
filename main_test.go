@@ -54,12 +54,21 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	go func() { _ = broker.Serve() }()
 	t.Cleanup(func() { _ = broker.Close() })
 
+	forcedOnline := make(chan struct{}, 1)
 	// Fake camera: answers health probes, streams one press and one human
 	// detection, then heartbeats
 	// until the client hangs up.
 	cam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "magicBox") {
 			fmt.Fprint(w, "name=Doorbell")
+			return
+		}
+		if strings.Contains(r.URL.RawQuery, "VSP_PaaS.Online=true") {
+			select {
+			case forcedOnline <- struct{}{}:
+			default:
+			}
+			fmt.Fprint(w, "OK\r\n")
 			return
 		}
 		if strings.Contains(r.URL.Path, "snapshot") {
@@ -84,7 +93,13 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 			}
 		}
 	}))
-	t.Cleanup(cam.Close)
+	// Drop open connections first: Close waits for in-flight requests, and
+	// main()'s event stream never finishes on its own, so a failing test
+	// would otherwise hang in cleanup instead of reporting.
+	t.Cleanup(func() {
+		cam.CloseClientConnections()
+		cam.Close()
+	})
 
 	healthPort := freePort(t)
 	t.Setenv("MQTT_BROKER_URL", "tcp://"+brokerAddr)
@@ -96,6 +111,7 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 	t.Setenv("MQTT_DISCOVERY_PREFIX", "homeassistant")
 	t.Setenv("MQTT_PAYLOAD_FORMAT", "json")
 	t.Setenv("SNAPSHOT", "press,human")
+	t.Setenv("DAHUA_FORCE_ONLINE", "true")
 	t.Setenv("HOSTNAME_OR_IP", strings.TrimPrefix(cam.URL, "http://"))
 	t.Setenv("DAHUA_USERNAME", "admin")
 	t.Setenv("DAHUA_PASSWORD", "secret")
@@ -208,6 +224,13 @@ func TestEndToEndDoorbellPress(t *testing.T) {
 			t.Fatal("/health never reported 200")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// DAHUA_FORCE_ONLINE marks the camera online right away, not one interval in.
+	select {
+	case <-forcedOnline:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DAHUA_FORCE_ONLINE never sent VSP_PaaS.Online=true to the camera")
 	}
 
 	// /metrics reflects what just happened.

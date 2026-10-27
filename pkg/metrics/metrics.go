@@ -195,6 +195,8 @@ var (
 		"Event-snapshot stream connections established (SNAPSHOT_SOURCE=event).")
 	SnapshotStreamFailures = NewCounter("dahua_companion_snapshot_stream_failures_total",
 		"Event-snapshot stream attempts that failed or connections that dropped (SNAPSHOT_SOURCE=event).")
+	ForceOnline = NewCounter("dahua_companion_force_online_total",
+		"DAHUA_FORCE_ONLINE attempts to mark the camera's cloud connection up, by result (ok, failed).", "result")
 	EventsReceived = NewCounter("dahua_companion_events_received_total",
 		"Camera events reported for publishing.", "event")
 	EventsSuppressed = NewCounter("dahua_companion_events_suppressed_total",

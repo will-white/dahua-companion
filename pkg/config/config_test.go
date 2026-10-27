@@ -14,7 +14,8 @@ func clearAmbientEnv(t *testing.T) {
 	vars := []string{
 		"MQTT_BROKER_URL", "MQTT_CLIENT_ID", "MQTT_USERNAME", "MQTT_PASSWORD",
 		"MQTT_TOPIC", "MQTT_AVAILABILITY_TOPIC", "MQTT_HUMAN_TOPIC", "MQTT_PAYLOAD_FORMAT", "HUMAN_COOLDOWN", "SNAPSHOT",
-		"DAHUA_SCHEME", "DAHUA_CA_FILE", "DAHUA_TLS_INSECURE", "SNAPSHOT_SOURCE", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
+		"DAHUA_SCHEME", "DAHUA_CA_FILE", "DAHUA_TLS_INSECURE", "SNAPSHOT_SOURCE",
+		"DAHUA_FORCE_ONLINE", "DAHUA_FORCE_ONLINE_INTERVAL", "MQTT_DISCOVERY_PREFIX", "HOSTNAME_OR_IP",
 		"DAHUA_USERNAME", "DAHUA_PASSWORD",
 		"USERNAME", "PASSWORD", "HEALTH_PORT",
 		"MQTT_USERNAME_FILE", "MQTT_PASSWORD_FILE", "DAHUA_USERNAME_FILE", "DAHUA_PASSWORD_FILE",
@@ -90,6 +91,9 @@ DAHUA_PASSWORD=from-env-file
 	}
 	if got := cfg.Mqtt.SnapshotSource; got != SnapshotFromRequest {
 		t.Errorf("SnapshotSource = %q, want default", got)
+	}
+	if cfg.Dahua.ForceOnline || cfg.Dahua.ForceOnlineInterval != 30*time.Second {
+		t.Errorf("ForceOnline = %v every %v, want off by default with a 30s interval", cfg.Dahua.ForceOnline, cfg.Dahua.ForceOnlineInterval)
 	}
 	if got := cfg.Dahua.Scheme; got != SchemeHTTP {
 		t.Errorf("Scheme = %q, want plain http by default", got)
